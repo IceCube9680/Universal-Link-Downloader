@@ -1,0 +1,251 @@
+# 🚀 Universal Link Downloader Telegram Bot
+
+A production-ready, asynchronous, highly modular **Universal Link Downloader Telegram Bot** built with Python 3.12+, Pyrogram MTProto, aiohttp streaming, SQLite/PostgreSQL-ready database repository, and SSRF security protection.
+
+---
+
+## 🌟 Features
+
+* **⚡ Streaming & Memory Efficient:** Files stream directly from source HTTP response chunks to disk and straight to Telegram. Large files (up to 2GB/4GB) never get loaded into RAM.
+* **🛡️ SSRF & Security Defense:** 
+  * Blocks loopback (`127.0.0.0/8`), private subnets (RFC 1918), link-local (`169.254.0.0/16`), cloud metadata (`169.254.169.254`), and IPv6 private addresses.
+  * Resolves and verifies DNS hostnames against rebinding attacks.
+  * Path traversal protection and filename sanitization against `../`, null bytes, and reserved system characters.
+* **📦 Supported Services (Phase 1, 2, 3 & 4 - 26 Adapters):**
+  * 🌐 **Generic HTTP/HTTPS:** Direct downloadable files with streaming chunks, range resumes, and MIME detection.
+  * 📂 **MediaFire:** Scrapes CDN download URLs and metadata.
+  * ⚡ **Pixeldrain:** Official high-speed API integration (`/api/file/<id>`).
+  * 🚀 **GoFile:** Automated guest token creation and direct folder/file stream resolution.
+  * 📦 **Dropbox:** Share link conversion to direct stream endpoints (`dl=1`).
+  * 📁 **Google Drive:** File ID extraction & large-file virus-scan confirmation resolver.
+  * ☁️ **OneDrive:** Microsoft Shares API (`/shares/u!<base64>/root/content`) resolution.
+  * 📦 **TeraBox:** Shorturl (`surl`) resolver with optional `TERABOX_COOKIE` support.
+  * 🔒 **MEGA:** API resolution, attribute decryption, and streaming on-the-fly AES-CTR payload decryption.
+  * 📁 **1fichier:** Web form resolution with direct CDN link extraction & optional `ONEFICHIER_API_KEY`.
+  * 📨 **WeTransfer:** Shortlink unshortening & transfer API (`/api/v4/transfers/{id}/download`) pre-signed S3 resolver.
+  * 🇨🇭 **SwissTransfer:** Transfer metadata API resolution & direct multi-file / single-file stream downloads.
+  * 📤 **SendGB:** Transfer share ID extraction and direct download link resolution.
+  * ⏱️ **File.io:** Temporary expiring file link streaming and resolution.
+  * 🐱 **Catbox & Litterbox:** Direct CDN streaming (`files.catbox.moe`, `litterbox.catbox.moe`).
+  * 🕊️ **Uguu:** Direct temporary file hosting stream (`a.uguu.se`).
+  * ☁️ **Nextcloud:** Enterprise private cloud share link & WebDAV download resolver (`/s/<token>/download`).
+  * ☁️ **ownCloud:** Enterprise file share direct download resolver.
+  * 🌊 **Seafile:** Private/cloud Seafile file (`/f/<token>/?raw=1`) and directory stream resolver.
+  * 🪣 **Amazon S3:** Pre-signed and public Amazon S3 object streams.
+  * ⚡ **Cloudflare R2:** Cloudflare R2 object storage & custom domain resolver (`*.r2.dev`).
+  * 🅱️ **Backblaze B2:** Backblaze B2 public & bucket download streams (`*.backblazeb2.com`).
+  * 🟢 **Wasabi:** Wasabi hot cloud storage object resolver.
+  * 🌈 **Google Cloud Storage (GCS):** Public & pre-signed GCS blob streams (`storage.googleapis.com`).
+  * 🔷 **Azure Blob Storage:** Azure Blob Storage with SAS token support (`*.blob.core.windows.net`).
+  * 🐰 **Bunny Storage / BunnyCDN:** High-speed edge storage streams (`*.b-cdn.net`, `*.bunnycdn.com`).
+* **📈 Live Animated Progress Bars:** Dynamic progress updates with byte counters, real-time smoothed speed calculation, ETA, and throttled message editing to prevent Telegram flood limits.
+* **🛡️ Sliding Window Rate Limiting:** Configurable per-user request throttling with sliding time windows to prevent server abuse and spam.
+* **📊 Metrics & Telemetry:** Real-time monitoring of CPU, RAM, Disk, throughput counters, top services, and Prometheus metrics exposition format.
+* **👑 Interactive Admin Dashboard:** Full-featured inline dashboard to inspect recent jobs, view system telemetry, manage registered users (ban/unban), broadcast announcements, and clear cache.
+* **🔄 Redis Distributed Queue & Distributed Locks:** Optional Redis backend (`REDIS_URL`) for horizontal multi-worker clustering, distributed job queues, and locking.
+* **🍃 MongoDB + PostgreSQL + SQLite Multi-Engine Database Support:** Full native async MongoDB driver via `motor` with automatic index creation and aggregation pipelines, alongside PostgreSQL (`asyncpg`) and SQLite (`aiosqlite`).
+* **⚙️ Interactive Bot UI:** Inline keyboards for settings, format selection (Document vs Media/Video streaming), job cancellation, and real-time status tracking.
+* **🗃️ Concurrency & Queue Manager:** Per-user job limits, daily download limits, in-flight URL deduplication, and graceful worker lifecycle management.
+* **🐳 Docker Multi-Worker Cluster:** Complete `docker-compose.yml` with `universal-bot`, scalable `universal-worker` nodes, `redis`, and `postgres` services.
+
+---
+
+## 🏗️ Architecture
+
+```text
+app/
+├── bot/                 # Telegram MTProto client, command handlers, filters & UI
+│   ├── callbacks/       # Inline button callback actions (cancel, toggle mode, admin)
+│   ├── filters/         # Pyrogram custom filters (admins, URL matching)
+│   ├── handlers/        # Command & message dispatchers (/start, /admin, /metrics, etc.)
+│   └── ui/              # Keyboards, progress templates, and status cards
+├── core/                # System core configurations, exceptions & metrics
+│   ├── config.py        # Pydantic environment configuration
+│   ├── constants.py     # State enums & default limits
+│   ├── exceptions.py    # Domain error classes with user-friendly messages
+│   ├── logging.py       # Redacted structured logger
+│   ├── metrics.py       # Real-time telemetry, Prometheus & system resources
+│   └── rate_limit.py    # Sliding window rate limiter (In-Memory / Redis)
+├── database/            # Dual SQLite / PostgreSQL async repository layer
+│   ├── database.py      # Connection pool manager
+│   ├── models.py        # Domain entities (User, DownloadJob)
+│   └── repository.py    # CRUD and aggregation queries
+├── download/            # Core streaming download engine
+│   ├── filesystem.py    # Job directory isolation, disk space checks & cleanup
+│   ├── manager.py       # Semaphores, exponential retries & HTTP streaming
+│   └── progress.py      # Speed estimation, smoothing, ETA calculation
+├── downloaders/         # 26 Specialized service plugins & base classes
+│   ├── base.py          # BaseDownloader ABC & dataclasses
+│   ├── registry.py      # Dynamic prioritized handler registry
+│   ├── generic.py       # Fallback generic streaming HTTP downloader
+│   └── ...              # Specialized adapters (MEGA, Drive, S3, R2, Nextcloud, etc.)
+├── queue/               # Concurrency & distributed job processing
+│   ├── jobs.py          # JobContext lifecycle state
+│   ├── manager.py       # In-memory queue manager & worker task loops
+│   └── redis_queue.py   # Redis distributed queue & distributed locks
+├── upload/              # MTProto streaming upload engine
+│   ├── media.py         # Video metadata extraction & ffmpeg thumbnailing
+│   ├── progress.py      # Upload progress tracker with FloodWait handling
+│   └── telegram.py      # Pyrogram client streaming uploader (2GB / 4GB)
+├── utils/               # Sanitizers, SSRF security & parsers
+│   ├── filename.py      # Path traversal protection & Content-Disposition parser
+│   ├── filesize.py      # Human-readable formatters & byte parsers
+│   ├── mime.py          # MIME type classifier (video, audio, image, doc)
+│   ├── security.py      # SSRF firewall (loopback, private subnets, cloud metadata)
+│   └── url.py           # URL validator & parameter cleaner
+├── main.py              # Main bot process entrypoint
+└── worker.py            # Scalable distributed worker daemon entrypoint
+```
+
+---
+
+## 🚀 Quick Start
+
+### 1. Prerequisites
+- Python 3.12+ (or Docker)
+- Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
+- Telegram `API_ID` & `API_HASH` (from [my.telegram.org](https://my.telegram.org))
+
+### 2. Local Setup
+
+```bash
+# 1. Clone repository
+git clone https://github.com/your-username/universal-downloader-bot.git
+cd universal-downloader-bot
+
+# 2. Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Configure environment
+cp .env.example .env
+nano .env  # Fill in your BOT_TOKEN, API_ID, API_HASH, ADMIN_IDS
+
+# 5. Run the bot
+python main.py
+```
+
+### 3. Docker Deployment
+
+```bash
+# Configure .env
+cp .env.example .env
+# Edit .env with your credentials
+
+# Start with Docker Compose
+docker compose up -d --build
+
+# View logs
+docker compose logs -f
+```
+
+---
+
+## ⚙️ Configuration Reference (`.env`)
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `BOT_TOKEN` | `""` | Telegram Bot Token from @BotFather |
+| `API_ID` | `0` | Telegram API ID from my.telegram.org |
+| `API_HASH` | `""` | Telegram API Hash from my.telegram.org |
+| `ADMIN_IDS` | `""` | Comma-separated admin Telegram IDs |
+| `DATABASE_URL` | `sqlite:///data/bot.db` | SQLite or PostgreSQL connection string |
+| `DOWNLOAD_DIR` | `./downloads` | Directory for active downloads |
+| `TEMP_DIR` | `./temp` | Directory for temporary files |
+| `LOG_DIR` | `./logs` | Directory for log files |
+| `MAX_CONCURRENT_DOWNLOADS` | `2` | Global concurrent download limit |
+| `MAX_CONCURRENT_UPLOADS` | `2` | Global concurrent upload limit |
+| `MAX_DOWNLOAD_SIZE` | `4GB` | Maximum downloadable file size |
+| `MAX_ACTIVE_JOBS_PER_USER` | `2` | Simultaneous downloads allowed per user |
+| `MAX_DAILY_DOWNLOADS_PER_USER` | `20` | Max completed downloads per user per day |
+| `PROGRESS_UPDATE_INTERVAL` | `3.0` | Seconds between Telegram progress message edits |
+| `SSRF_PROTECTION_ENABLED` | `true` | Prevent downloads from private / internal IP ranges |
+| `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+
+---
+
+## 🤖 Bot Commands
+
+### User Commands
+- `/start` - Welcome message and quick start buttons
+- `/help` - Usage guide and limits information
+- `/settings` - Configure upload format (`Document` vs `Media`)
+- `/status` - View your active and queued downloads
+- `/cancel [job_id]` - Cancel an ongoing download
+
+### Admin Commands (Restricted to `ADMIN_IDS`)
+- `/stats` - View global statistics (users, completed/failed jobs, bandwidth)
+- `/jobs` - List recent 15 jobs and statuses
+- `/users` - View user count and recent active users
+- `/broadcast <message>` - Broadcast an announcement to all users
+- `/clearcache` - Purge orphaned temporary directories
+- `/restart` - Trigger safe graceful process restart
+
+---
+
+## 🧩 Adding a New Downloader Adapter
+
+To add support for a new service (e.g. Mega, Mediafire, Google Drive), follow these simple steps:
+
+1. **Create Adapter Class** in `app/downloaders/<service_name>.py`:
+```python
+from app.downloaders.base import BaseDownloader, FileMetadata, ResolvedURL, DownloadResult
+
+class MyServiceDownloader(BaseDownloader):
+    name: str = "MyService"
+    priority: int = 50  # Lower than 9999 so it executes before GenericHTTPDownloader
+    domain_patterns = ["myservice.com", "myshare.io"]
+
+    def can_handle(self, url: str) -> bool:
+        return any(pattern in url.lower() for pattern in self.domain_patterns)
+
+    async def get_metadata(self, url: str, session=None) -> FileMetadata:
+        # Extract filename and size from service API/HTML
+        return FileMetadata(
+            filename="example.zip",
+            filesize=104857600,
+            mime_type="application/zip",
+            source_service=self.name
+        )
+
+    async def resolve(self, url: str, session=None) -> ResolvedURL:
+        # Resolve direct download URL
+        return ResolvedURL(direct_url="https://direct-cdn.myservice.com/...")
+
+    async def download(self, url: str, destination_dir: str, progress_callback=None, cancel_event=None, session=None, custom_filename=None) -> DownloadResult:
+        # Perform download or delegate to self.resolve() + streaming HTTP download
+        ...
+```
+
+2. **Register the Adapter** in `app/downloaders/__init__.py`:
+```python
+from app.downloaders.myservice import MyServiceDownloader
+
+registry.register(MyServiceDownloader())
+```
+
+3. **Add Tests** in `tests/test_myservice.py`.
+
+---
+
+## 🧪 Testing
+
+The repository includes a comprehensive unit and integration test suite with 100% mocked network calls:
+
+```bash
+# Run test suite
+source .venv/bin/activate
+pytest -v
+```
+
+---
+
+## 🔒 Security & Privacy
+
+1. **No Hardcoded Secrets**: All tokens and hashes are loaded via `.env`.
+2. **Secret Redaction**: Structured logging automatically masks bot tokens, authorization headers, and API keys.
+3. **SSRF Protection**: Resolves all domains before HTTP connection and blocks private, loopback, link-local, and AWS/GCP metadata endpoints (`169.254.169.254`).
+4. **Filesystem Isolation**: Each job runs inside an isolated directory (`downloads/<job_id>/`) with strict filename sanitization and guaranteed `finally` cleanup.

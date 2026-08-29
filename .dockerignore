@@ -1,0 +1,17 @@
+.git
+.gitignore
+.dockerignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+tests
+.env
+data
+downloads
+temp
+logs
+*.session
+*.session-journal

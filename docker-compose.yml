@@ -1,0 +1,61 @@
+services:
+  universal-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: universal_downloader_bot
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+      - mongodb
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  universal-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "app/worker.py"]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+      - mongodb
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  redis:
+    image: redis:7-alpine
+    container_name: universal_redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
+  mongodb:
+    image: mongo:7.0
+    container_name: universal_mongodb
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  redis_data:
+  mongo_data:
