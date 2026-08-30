@@ -1,0 +1,29 @@
+[Unit]
+Description=Universal Link Downloader Telegram Bot
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=icecube
+Group=icecube
+WorkingDirectory=/home/icecube/ASUS/Universal
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/icecube/ASUS/Universal/.venv/bin/python3 /home/icecube/ASUS/Universal/main.py
+Restart=always
+RestartSec=5s
+KillMode=process
+TimeoutStopSec=15s
+LimitNOFILE=65536
+
+# Security and Sandbox options
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Standard Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=universal-bot
+
+[Install]
+WantedBy=multi-user.target
