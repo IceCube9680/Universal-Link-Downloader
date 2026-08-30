@@ -27,6 +27,7 @@ TERABOX_DOMAINS = [
     "terabox.com",
     "terabox.app",
     "teraboxapp.com",
+    "teraboxurl.com",
     "1024tera.com",
     "1024terabox.com",
     "teraboxshare.com",
@@ -34,6 +35,12 @@ TERABOX_DOMAINS = [
     "terasharefile.com",
     "terafileshare.com",
     "terasharelink.com",
+    "terabox.fun",
+    "terabox.club",
+    "terabox.me",
+    "terabox.tech",
+    "terabox.link",
+    "teradrive.com",
     "nephobox.com",
     "freeterabox.com",
     "4funbox.com",
@@ -41,7 +48,11 @@ TERABOX_DOMAINS = [
     "mirrorbox.com",
     "momerybox.com",
     "tibibox.com",
-    "terabox.link"
+    "boxtera.com",
+    "terafiles.com",
+    "teradownloader.com",
+    "terashare.net",
+    "terashare.cc",
 ]
 
 
@@ -82,6 +93,7 @@ class TeraBoxDownloader(BaseDownloader):
     def extract_surl(self, url: str) -> Optional[str]:
         """
         Extract TeraBox shorturl key across all clone and mirror link variations:
+        - https://teraboxurl.com/s/1jo_gPZiIhpMwKGFwFPPgvQ
         - https://teraboxshare.com/s/1jo_gPZiIhpMwKGFwFPPgvQ
         - https://terabox.com/s/1abc12345
         - https://1024tera.com/s/1xyz987
@@ -89,14 +101,15 @@ class TeraBoxDownloader(BaseDownloader):
         - https://teraboxapp.com/sharing/link?surl=abc12345
         - https://diskwala.com/wap/share/filelist?surl=...
         - https://mirrobox.com/s/abc12345
+        - https://teraboxurl.com/1abc12345
         """
-        # Format 1: ?surl=<key> or &shorturl=<key>
-        match_q = re.search(r'[?&](?:surl|shorturl)=([a-zA-Z0-9_-]+)', url)
+        # Format 1: ?surl=<key> or &shorturl=<key> or ?code=<key> or ?key=<key>
+        match_q = re.search(r'[?&](?:surl|shorturl|code|key|id)=([a-zA-Z0-9_-]+)', url)
         if match_q:
             return match_q.group(1)
 
-        # Format 2: /s/<key>, /wap/share/filelist/<key>, /sharing/link/<key>, /app/<key>
-        match = re.search(r'/(?:s|wap/share/filelist|sharing/link|app)/([a-zA-Z0-9_-]+)', url)
+        # Format 2: /s/<key>, /wap/share/filelist/<key>, /sharing/link/<key>, /app/<key>, /d/<key>, /file/<key>
+        match = re.search(r'/(?:s|wap/share/filelist|sharing/link|app|d|file)/([a-zA-Z0-9_-]+)', url)
         if match:
             return match.group(1)
 
@@ -104,6 +117,11 @@ class TeraBoxDownloader(BaseDownloader):
         match_share = re.search(r'/(?:sharing|share)/([a-zA-Z0-9_-]+)', url)
         if match_share:
             return match_share.group(1)
+
+        # Format 4: Path ending directly in surl code e.g. /1abc12345 or /WEUA8kuiwqs-1piiDAh2TQ
+        match_direct = re.search(r'/([1a-zA-Z0-9_-]{12,})(?:[/?#]|$)', url)
+        if match_direct:
+            return match_direct.group(1)
 
         return None
 
@@ -136,7 +154,23 @@ class TeraBoxDownloader(BaseDownloader):
         session: Optional[aiohttp.ClientSession] = None
     ) -> ResolvedURL:
         surl = self.extract_surl(url)
+        should_close = False
+        if session is None:
+            session = aiohttp.ClientSession()
+            should_close = True
+
         if not surl:
+            # Try following redirects to see if target URL contains surl
+            try:
+                async with session.get(url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    final_url = str(resp.url)
+                    surl = self.extract_surl(final_url)
+            except Exception:
+                pass
+
+        if not surl:
+            if should_close:
+                await session.close()
             raise DownloaderResolutionError(f"Could not parse TeraBox surl from: {url}")
 
         surl_candidates = self._get_surl_candidates(surl)
@@ -149,11 +183,6 @@ class TeraBoxDownloader(BaseDownloader):
         }
         if cookie_header:
             base_headers["Cookie"] = cookie_header
-
-        should_close = False
-        if session is None:
-            session = aiohttp.ClientSession()
-            should_close = True
 
         last_error = None
         need_verify = False

@@ -1,6 +1,145 @@
+from typing import Optional
 from app.core.config import settings
 from app.database.models import BotStats
-from app.utils.filesize import format_filesize
+from app.download.progress import render_progress_bar
+from app.utils.filesize import format_eta, format_filesize, format_speed
+
+
+def get_task_process_card(
+    job_id: str,
+    stage: str,
+    service_name: Optional[str] = None,
+    upload_mode: str = "DOCUMENT",
+    filename: Optional[str] = None,
+    filesize_bytes: Optional[int] = None,
+    url: Optional[str] = None,
+    progress_pct: float = 0.0,
+    transferred_bytes: int = 0,
+    total_bytes: Optional[int] = None,
+    speed: float = 0.0,
+    eta: Optional[float] = None,
+    duration: Optional[float] = None,
+    error: Optional[str] = None,
+    priority: int = 5
+) -> str:
+    """
+    Generate unified multi-step task process card showing all stages in one view:
+    Resolving ➔ Downloading ➔ Uploading ➔ Completed.
+    """
+    svc_display = service_name or "Detecting..."
+    mode_display = upload_mode.upper() if upload_mode else "DOCUMENT"
+    stage_upper = stage.upper()
+
+    lines = [
+        f"⚡ **Task `#{job_id}`**",
+        f"🌐 **Source:** `{svc_display}` | 📦 **Mode:** `{mode_display}`"
+    ]
+
+    effective_size = filesize_bytes or total_bytes
+    if filename:
+        lines.append(f"📄 **File:** `{filename}`")
+    if effective_size and effective_size > 0:
+        lines.append(f"📊 **Size:** `{format_filesize(effective_size)}`")
+    elif url and not filename:
+        short_url = url if len(url) <= 55 else f"{url[:52]}..."
+        lines.append(f"🔗 **Link:** `{short_url}`")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    if stage_upper == "QUEUED":
+        lines.extend([
+            f"⏳ **Status:** `In Download Queue (Priority: {priority})...`",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "⏳ [1/3] 🔎 Link Resolution",
+            "⏳ [2/3] ⬇️ Download from Source",
+            "⏳ [3/3] ⬆️ Upload to Telegram",
+            f"\n🛑 `/cancel {job_id}`"
+        ])
+
+    elif stage_upper == "RESOLVING":
+        lines.extend([
+            "🔄 **Status:** `Resolving & Inspecting link...`",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🔄 [1/3] 🔎 Link Resolution",
+            "⏳ [2/3] ⬇️ Download from Source",
+            "⏳ [3/3] ⬆️ Upload to Telegram",
+            f"\n🛑 `/cancel {job_id}`"
+        ])
+
+    elif stage_upper == "DOWNLOADING":
+        bar = render_progress_bar(progress_pct)
+        cur_str = format_filesize(transferred_bytes)
+        tot_str = format_filesize(total_bytes or effective_size, default="Calculating...")
+        spd_str = format_speed(speed)
+        eta_str = format_eta(eta)
+        lines.extend([
+            "⬇️ **Status:** `Downloading from source...`",
+            f"`{bar}`",
+            f"⚡ **Speed:** `{spd_str}` | ⏱️ **ETA:** `{eta_str}`",
+            f"📦 **Progress:** `{cur_str} / {tot_str}`",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "✅ [1/3] 🔎 Link Resolved",
+            "🔄 [2/3] ⬇️ Downloading",
+            "⏳ [3/3] ⬆️ Upload to Telegram",
+            f"\n🛑 `/cancel {job_id}`"
+        ])
+
+    elif stage_upper == "DOWNLOADED":
+        lines.extend([
+            "📦 **Status:** `Download finished. Initializing Telegram upload...`",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "✅ [1/3] 🔎 Link Resolved",
+            "✅ [2/3] ⬇️ Download Complete",
+            "🔄 [3/3] ⬆️ Upload to Telegram",
+            f"\n🛑 `/cancel {job_id}`"
+        ])
+
+    elif stage_upper == "UPLOADING":
+        bar = render_progress_bar(progress_pct)
+        cur_str = format_filesize(transferred_bytes)
+        tot_str = format_filesize(total_bytes or effective_size, default="Calculating...")
+        spd_str = format_speed(speed)
+        eta_str = format_eta(eta)
+        lines.extend([
+            "⬆️ **Status:** `Uploading to Telegram...`",
+            f"`{bar}`",
+            f"⚡ **Speed:** `{spd_str}` | ⏱️ **ETA:** `{eta_str}`",
+            f"📦 **Uploaded:** `{cur_str} / {tot_str}`",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "✅ [1/3] 🔎 Link Resolved",
+            "✅ [2/3] ⬇️ Download Complete",
+            "🔄 [3/3] ⬆️ Uploading to Telegram",
+            f"\n🛑 `/cancel {job_id}`"
+        ])
+
+    elif stage_upper == "COMPLETED":
+        dur_str = f"{int(duration)}s" if duration else "Done"
+        lines.extend([
+            "✅ **Task Completed & Delivered!**",
+            f"⏱️ **Total Time:** `{dur_str}`",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "✅ [1/3] 🔎 Link Resolved",
+            "✅ [2/3] ⬇️ Download Complete",
+            "✅ [3/3] ⬆️ Upload Complete"
+        ])
+
+    elif stage_upper == "CANCELLED":
+        lines.extend([
+            "🛑 **Task Cancelled by User**",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"🛑 Job `#{job_id}` cancelled."
+        ])
+
+    elif stage_upper == "FAILED":
+        err_msg = (error or "Unknown error")[:120]
+        lines.extend([
+            "❌ **Task Failed**",
+            f"⚠️ `{err_msg}`",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "❌ Process interrupted."
+        ])
+
+    return "\n".join(lines)
 
 
 def get_start_message(first_name: str) -> str:
@@ -63,3 +202,4 @@ def get_stats_card(stats: BotStats) -> str:
         f"⬇️ **Total Downloaded:** `{down_str}`\n"
         f"⬆️ **Total Uploaded:** `{up_str}`"
     )
+

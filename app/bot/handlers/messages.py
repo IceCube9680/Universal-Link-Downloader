@@ -1,13 +1,16 @@
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.errors import UserNotParticipant
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from app.bot.ui.messages import get_task_process_card
 from app.core.config import settings
 from app.core.exceptions import DownloaderError, SSRFError, UserLimitExceededError
 from app.core.logging import get_logger
 from app.database.database import Database
 from app.database.repository import UserRepository
 from app.queue.manager import job_queue
+from app.utils.container import is_container_url, extract_links_from_container
 from app.utils.security import SSRFProtectionError, validate_url_security
 from app.utils.url import extract_urls
 
@@ -62,12 +65,12 @@ def register_message_handlers(app: Client, db: Database) -> None:
             return
 
         text = message.text.strip()
-        urls = extract_urls(text)
+        raw_urls = extract_urls(text)
 
-        if not urls:
+        if not raw_urls:
             await message.reply_text(
                 "❌ **No valid link detected.**\n\n"
-                "Please send a valid `http://` or `https://` download URL.",
+                "Please send a valid `http://` or `https://` download URL or article link (e.g. Graph.org).",
                 disable_web_page_preview=True
             )
             return
@@ -79,40 +82,104 @@ def register_message_handlers(app: Client, db: Database) -> None:
             await message.reply_text(err_text, reply_markup=markup)
             return
 
-        # Process detected URLs (start with first URL)
-        for url in urls[:1]:  # Process one URL safely per message initially
+        # 1. Expand container links (e.g. Graph.org, Telegraph, Pastebin)
+        target_urls = []
+        containers_expanded = []
+
+        for raw_url in raw_urls:
+            if is_container_url(raw_url):
+                containers_expanded.append(raw_url)
+                try:
+                    extracted = await extract_links_from_container(raw_url)
+                    if extracted:
+                        for eu in extracted:
+                            if eu not in target_urls:
+                                target_urls.append(eu)
+                    else:
+                        if raw_url not in target_urls:
+                            target_urls.append(raw_url)
+                except Exception as ce:
+                    logger.warning("Failed to extract links from container %s: %s", raw_url, ce)
+                    if raw_url not in target_urls:
+                        target_urls.append(raw_url)
+            else:
+                if raw_url not in target_urls:
+                    target_urls.append(raw_url)
+
+        if not target_urls:
+            await message.reply_text(
+                "⚠️ **No download links found.**\n\nCould not find any downloadable links in the provided message or article.",
+                disable_web_page_preview=True
+            )
+            return
+
+        # 2. Inform user about batch/container detection if multiple links
+        if containers_expanded:
+            await message.reply_text(
+                f"📑 **Container Article Detected**\n\n"
+                f"Extracted **{len(target_urls)}** download link(s) from article page.\n"
+                f"🚀 _Queueing tasks..._",
+                disable_web_page_preview=True
+            )
+        elif len(target_urls) > 1:
+            await message.reply_text(
+                f"📦 **Batch Processing: {len(target_urls)} Links Detected**\n\n"
+                f"🚀 _Queueing all download tasks..._",
+                disable_web_page_preview=True
+            )
+
+        # 3. Queue all target URLs
+        upload_mode = db_user.upload_mode or "DOCUMENT"
+        queued_count = 0
+
+        for idx, url in enumerate(target_urls, 1):
             try:
                 # SSRF Pre-flight check
                 if settings.SSRF_PROTECTION_ENABLED:
                     await validate_url_security(url)
 
-                # Send initial status message
+                # Send initial unified task status message
+                temp_task_id = f"Q{idx:02d}"
+                init_text = get_task_process_card(
+                    job_id=temp_task_id,
+                    stage="QUEUED",
+                    upload_mode=upload_mode,
+                    url=url
+                )
                 status_msg = await message.reply_text(
-                    "🔎 **Detecting link & queueing download...**\n\n"
-                    f"🔗 `{url}`",
+                    init_text,
                     disable_web_page_preview=True
                 )
 
                 # Submit to queue
-                await job_queue.submit_job(
+                job_ctx = await job_queue.submit_job(
                     user_id=user.id,
                     chat_id=message.chat.id,
                     message_id=status_msg.id,
                     url=url,
-                    upload_mode=db_user.upload_mode or "DOCUMENT"
+                    upload_mode=upload_mode
                 )
+                queued_count += 1
+
+                # Small delay to prevent Telegram flood rate limits on large batches
+                if len(target_urls) > 1:
+                    await asyncio.sleep(0.2)
 
             except SSRFProtectionError as ssrf_err:
                 logger.warning("SSRF blocked for user %d on URL %s: %s", user.id, url, ssrf_err)
                 await message.reply_text(
-                    "❌ **Security Violation:** Access to internal, private, or local network addresses is strictly blocked."
+                    f"❌ **Security Violation on link #{idx}:**\n`{url}`\nAccess to internal or restricted network addresses is blocked."
                 )
             except UserLimitExceededError as limit_err:
-                logger.info("User limit exceeded for %d: %s", user.id, limit_err)
-                await message.reply_text(f"⚠️ {limit_err.user_message}")
+                logger.info("User limit reached for %d: %s", user.id, limit_err)
+                await message.reply_text(
+                    f"⚠️ **Queue Limit Reached:**\n{limit_err.user_message}\n\n"
+                    f"✅ **{queued_count}** of **{len(target_urls)}** task(s) successfully queued."
+                )
+                break
             except DownloaderError as de:
-                logger.warning("Downloader error for user %d: %s", user.id, de)
-                await message.reply_text(de.user_message)
+                logger.warning("Downloader error for user %d on URL %s: %s", user.id, url, de)
+                await message.reply_text(f"⚠️ **Link #{idx} Error:** {de.user_message}")
             except Exception as e:
                 logger.error("Unexpected error submitting job for URL %s: %s", url, e, exc_info=True)
-                await message.reply_text(f"❌ Failed to process URL: {str(e)[:150]}")
+                await message.reply_text(f"❌ Failed to process link #{idx}: `{str(e)[:150]}`")

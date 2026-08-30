@@ -24,6 +24,8 @@ from app.core.rate_limit import rate_limiter
 from app.database.database import Database
 from app.database.models import DownloadJob, utcnow_str
 from app.database.repository import JobRepository, UserRepository
+from app.bot.ui.keyboards import get_cancel_keyboard
+from app.bot.ui.messages import get_task_process_card
 from app.download.filesystem import fs_manager
 from app.download.manager import download_manager
 from app.download.progress import ProgressTracker
@@ -119,9 +121,10 @@ class JobQueue:
 
         # 1. Check user limits
         user_jobs = self._user_job_map.get(user_id, [])
-        if len(user_jobs) >= settings.MAX_ACTIVE_JOBS_PER_USER:
+        max_allowed_jobs = settings.MAX_ACTIVE_JOBS_PER_USER + settings.MAX_QUEUE_SIZE_PER_USER
+        if len(user_jobs) >= max_allowed_jobs:
             raise UserLimitExceededError(
-                f"You already have {len(user_jobs)} active download(s). Please wait for them to finish."
+                f"You already have {len(user_jobs)} active/queued download(s). Please wait for them to finish."
             )
 
         # Check daily completed limit if DB available
@@ -313,9 +316,20 @@ class JobQueue:
             if self.job_repo:
                 await self.job_repo.update_status(ctx.job_id, ctx.status.value, started_at=utcnow_str())
 
+            resolve_card = get_task_process_card(
+                job_id=ctx.job_id,
+                stage="RESOLVING",
+                service_name=ctx.service_name or "Detecting...",
+                upload_mode=ctx.upload_mode,
+                filename=ctx.filename,
+                filesize_bytes=ctx.filesize,
+                url=ctx.url,
+                priority=ctx.priority
+            )
             await self._safe_edit_message(
                 ctx.chat_id, ctx.message_id,
-                f"🔎 **Detecting & Resolving link...**\n\n`{ctx.url}`"
+                resolve_card,
+                reply_markup=get_cancel_keyboard(ctx.job_id)
             )
 
             downloader = registry.get_downloader(ctx.url)
@@ -344,8 +358,21 @@ class JobQueue:
             async def download_progress_ui(tracker: ProgressTracker):
                 if ctx.cancel_event.is_set():
                     return
-                text = tracker.format_download_message()
-                await self._safe_edit_message(ctx.chat_id, ctx.message_id, text)
+                card = get_task_process_card(
+                    job_id=ctx.job_id,
+                    stage="DOWNLOADING",
+                    service_name=ctx.service_name,
+                    upload_mode=ctx.upload_mode,
+                    filename=ctx.filename or tracker.filename,
+                    filesize_bytes=ctx.filesize or tracker.total_bytes,
+                    progress_pct=tracker.percentage,
+                    transferred_bytes=tracker.downloaded_bytes,
+                    total_bytes=tracker.total_bytes or ctx.filesize,
+                    speed=tracker.speed,
+                    eta=tracker.eta,
+                    priority=ctx.priority
+                )
+                await self._safe_edit_message(ctx.chat_id, ctx.message_id, card, reply_markup=get_cancel_keyboard(ctx.job_id))
                 if redis_manager.is_connected:
                     await redis_manager.publish_progress(ctx.job_id, {
                         "status": "DOWNLOADING",
@@ -383,6 +410,21 @@ class JobQueue:
                     downloaded_bytes=ctx.filesize
                 )
 
+            downloaded_card = get_task_process_card(
+                job_id=ctx.job_id,
+                stage="DOWNLOADED",
+                service_name=ctx.service_name,
+                upload_mode=ctx.upload_mode,
+                filename=ctx.filename,
+                filesize_bytes=ctx.filesize,
+                priority=ctx.priority
+            )
+            await self._safe_edit_message(
+                ctx.chat_id, ctx.message_id,
+                downloaded_card,
+                reply_markup=get_cancel_keyboard(ctx.job_id)
+            )
+
             # 4. UPLOADING
             ctx.status = JobStatus.UPLOADING
             if self.job_repo:
@@ -391,8 +433,21 @@ class JobQueue:
             async def upload_progress_ui(tracker: UploadProgressTracker):
                 if ctx.cancel_event.is_set():
                     return
-                text = tracker.format_upload_message()
-                await self._safe_edit_message(ctx.chat_id, ctx.message_id, text)
+                card = get_task_process_card(
+                    job_id=ctx.job_id,
+                    stage="UPLOADING",
+                    service_name=ctx.service_name,
+                    upload_mode=ctx.upload_mode,
+                    filename=ctx.filename or tracker.filename,
+                    filesize_bytes=ctx.filesize or tracker.total_bytes,
+                    progress_pct=tracker.percentage,
+                    transferred_bytes=tracker.uploaded_bytes,
+                    total_bytes=tracker.total_bytes or ctx.filesize,
+                    speed=tracker.speed,
+                    eta=tracker.eta,
+                    priority=ctx.priority
+                )
+                await self._safe_edit_message(ctx.chat_id, ctx.message_id, card, reply_markup=get_cancel_keyboard(ctx.job_id))
                 if redis_manager.is_connected:
                     await redis_manager.publish_progress(ctx.job_id, {
                         "status": "UPLOADING",
@@ -470,9 +525,20 @@ class JobQueue:
                     completed_at=utcnow_str()
                 )
 
+            completed_card = get_task_process_card(
+                job_id=ctx.job_id,
+                stage="COMPLETED",
+                service_name=ctx.service_name,
+                upload_mode=ctx.upload_mode,
+                filename=ctx.filename,
+                filesize_bytes=ctx.filesize,
+                duration=ctx.duration,
+                priority=ctx.priority
+            )
             await self._safe_edit_message(
                 ctx.chat_id, ctx.message_id,
-                f"✅ **Download & Upload Completed!**\n\n📄 **File:** `{ctx.filename}`\n📦 **Size:** `{format_filesize(ctx.filesize)}`"
+                completed_card,
+                reply_markup=None
             )
             asyncio.create_task(channel_logger.log_job_completed(
                 self._client, ctx.job_id, ctx.user_id, ctx.filename or "file", ctx.filesize or 0, ctx.service_name, ctx.duration
@@ -484,9 +550,19 @@ class JobQueue:
             metrics.record_job_cancel()
             if self.job_repo:
                 await self.job_repo.update_status(ctx.job_id, ctx.status.value, error="Cancelled by user")
+            cancelled_card = get_task_process_card(
+                job_id=ctx.job_id,
+                stage="CANCELLED",
+                service_name=ctx.service_name,
+                upload_mode=ctx.upload_mode,
+                filename=ctx.filename,
+                filesize_bytes=ctx.filesize,
+                priority=ctx.priority
+            )
             await self._safe_edit_message(
                 ctx.chat_id, ctx.message_id,
-                f"🛑 **Download Cancelled**\n\nJob `#{ctx.job_id}` was cancelled."
+                cancelled_card,
+                reply_markup=None
             )
             asyncio.create_task(channel_logger.log_job_cancelled(self._client, ctx.job_id, ctx.user_id))
             job_logger.info("Job %s was cancelled", ctx.job_id)
@@ -497,9 +573,20 @@ class JobQueue:
             metrics.record_job_fail()
             if self.job_repo:
                 await self.job_repo.update_status(ctx.job_id, ctx.status.value, error=de.message)
+            failed_card = get_task_process_card(
+                job_id=ctx.job_id,
+                stage="FAILED",
+                service_name=ctx.service_name,
+                upload_mode=ctx.upload_mode,
+                filename=ctx.filename,
+                filesize_bytes=ctx.filesize,
+                error=de.user_message,
+                priority=ctx.priority
+            )
             await self._safe_edit_message(
                 ctx.chat_id, ctx.message_id,
-                f"❌ **Download Failed**\n\n⚠️ {de.user_message}"
+                failed_card,
+                reply_markup=None
             )
             asyncio.create_task(channel_logger.log_job_failed(self._client, ctx.job_id, ctx.user_id, ctx.service_name, de.message))
             job_logger.warning("Job %s failed: %s", ctx.job_id, de)
@@ -510,9 +597,20 @@ class JobQueue:
             metrics.record_job_fail()
             if self.job_repo:
                 await self.job_repo.update_status(ctx.job_id, ctx.status.value, error=str(e))
+            failed_card = get_task_process_card(
+                job_id=ctx.job_id,
+                stage="FAILED",
+                service_name=ctx.service_name,
+                upload_mode=ctx.upload_mode,
+                filename=ctx.filename,
+                filesize_bytes=ctx.filesize,
+                error=str(e)[:150],
+                priority=ctx.priority
+            )
             await self._safe_edit_message(
                 ctx.chat_id, ctx.message_id,
-                f"❌ **Unexpected Error**\n\n⚠️ `{str(e)[:150]}`"
+                failed_card,
+                reply_markup=None
             )
             asyncio.create_task(channel_logger.log_job_failed(self._client, ctx.job_id, ctx.user_id, ctx.service_name, str(e)))
             job_logger.error("Job %s failed with unexpected exception: %s", ctx.job_id, e, exc_info=True)
