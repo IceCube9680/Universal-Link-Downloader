@@ -78,97 +78,95 @@ class GDriveDownloader(BaseDownloader):
         if not file_id:
             raise DownloaderResolutionError(f"Could not extract Google Drive file ID from: {url}")
 
-        base_export_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        export_urls = [
+            f"https://drive.usercontent.google.com/download?id={file_id}&export=download&authuser=0&confirm=t",
+            f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t",
+            f"https://drive.google.com/uc?export=download&id={file_id}"
+        ]
+
         should_close = False
         if session is None:
             session = aiohttp.ClientSession(headers={"User-Agent": DEFAULT_USER_AGENT})
             should_close = True
 
         try:
-            # 1. Initial request to Google Drive uc endpoint
-            async with session.get(base_export_url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                content_disp = resp.headers.get("Content-Disposition")
-                content_type = resp.headers.get("Content-Type", "")
+            for export_url in export_urls:
+                try:
+                    async with session.get(export_url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                        content_disp = resp.headers.get("Content-Disposition")
+                        content_type = resp.headers.get("Content-Type", "")
 
-                # If direct download started immediately (small file)
-                if content_disp or not content_type.startswith("text/html"):
-                    filename = extract_filename_from_content_disposition(content_disp) or f"gdrive_{file_id}.bin"
-                    filename = sanitize_filename(filename)
-                    cl = resp.headers.get("Content-Length")
-                    filesize = int(cl) if cl and cl.isdigit() else None
+                        # If direct download started immediately (direct stream or small file)
+                        if content_disp or (resp.status == 200 and not content_type.startswith("text/html")):
+                            filename = extract_filename_from_content_disposition(content_disp) or f"gdrive_{file_id}.bin"
+                            filename = sanitize_filename(filename)
+                            cl = resp.headers.get("Content-Length")
+                            filesize = int(cl) if cl and cl.isdigit() else None
 
-                    metadata = FileMetadata(
-                        filename=filename,
-                        filesize=filesize,
-                        mime_type=content_type or get_mime_type(filename),
-                        source_service=self.name,
-                        is_direct=True,
-                        extra={"file_id": file_id}
-                    )
-                    return ResolvedURL(
-                        direct_url=str(resp.url),
-                        headers={"User-Agent": DEFAULT_USER_AGENT},
-                        metadata=metadata
-                    )
+                            metadata = FileMetadata(
+                                filename=filename,
+                                filesize=filesize,
+                                mime_type=content_type or get_mime_type(filename),
+                                source_service=self.name,
+                                is_direct=True,
+                                extra={"file_id": file_id}
+                            )
+                            return ResolvedURL(
+                                direct_url=str(resp.url),
+                                headers={"User-Agent": DEFAULT_USER_AGENT},
+                                metadata=metadata
+                            )
 
-                # 2. Handle large file virus scan warning page
-                html = await resp.text()
+                        # Handle large file warning page HTML
+                        html = await resp.text()
 
-                # Search for download confirmation token / link
-                confirm_token = None
-                token_match = re.search(r'confirm=([0-9A-Za-z_]+)', html)
-                if token_match:
-                    confirm_token = token_match.group(1)
+                        # Check for access denied / restricted file
+                        if "Access denied" in html or "You need access" in html or "permission" in html.lower() and "sign in" in html.lower():
+                            raise DownloaderResolutionError("Access denied. The Google Drive file is private or requires authorization.")
 
-                uuid_val = None
-                uuid_match = re.search(r'uuid=([0-9A-Za-z_-]+)', html)
-                if uuid_match:
-                    uuid_val = uuid_match.group(1)
+                        # Extract form action and inputs
+                        form_match = re.search(r'<form[^>]*action=["\']([^"\']+)["\'][^>]*>(.*?)</form>', html, re.DOTALL)
+                        if form_match:
+                            form_action = form_match.group(1).replace("&amp;", "&")
+                            form_body = form_match.group(2)
+                            inputs = re.findall(r'<input[^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']', form_body)
+                            if inputs:
+                                params = "&".join(f"{k}={v}" for k, v in inputs)
+                                direct_url = f"{form_action}?{params}" if "?" not in form_action else f"{form_action}&{params}"
+                            else:
+                                direct_url = form_action
 
-                # Search for direct action form or href
-                form_action_match = re.search(r'action="([^"]+download[^"]+)"', html)
-                direct_url = None
-                if form_action_match:
-                    direct_url = form_action_match.group(1).replace("&amp;", "&")
+                            title_match = re.search(r'<title>([^<]+)</title>', html)
+                            filename = sanitize_filename(title_match.group(1).replace(" - Google Drive", "").strip()) if title_match else f"gdrive_{file_id}.bin"
+                            return ResolvedURL(
+                                direct_url=direct_url,
+                                headers={"User-Agent": DEFAULT_USER_AGENT},
+                                metadata=FileMetadata(filename=filename, source_service=self.name, is_direct=True)
+                            )
 
-                if not direct_url:
-                    confirm_url_match = re.search(r'href="(/uc\?export=download[^"]+)"', html)
-                    if confirm_url_match:
-                        direct_url = "https://drive.google.com" + confirm_url_match.group(1).replace("&amp;", "&")
+                        # Search for confirmation URL or token in page
+                        url_match = re.search(r'(https://drive\.usercontent\.google\.com/download\?[^"\'\s<>]+)', html)
+                        if url_match:
+                            direct_url = url_match.group(1).replace("&amp;", "&")
+                            title_match = re.search(r'<title>([^<]+)</title>', html)
+                            filename = sanitize_filename(title_match.group(1).replace(" - Google Drive", "").strip()) if title_match else f"gdrive_{file_id}.bin"
+                            return ResolvedURL(
+                                direct_url=direct_url,
+                                headers={"User-Agent": DEFAULT_USER_AGENT},
+                                metadata=FileMetadata(filename=filename, source_service=self.name, is_direct=True)
+                            )
+                except DownloaderResolutionError:
+                    raise
+                except Exception:
+                    continue
 
-                if not direct_url and confirm_token:
-                    direct_url = f"https://drive.google.com/uc?export=download&confirm={confirm_token}&id={file_id}"
-                    if uuid_val:
-                        direct_url += f"&uuid={uuid_val}"
-
-                if not direct_url:
-                    # Check for access denied / restricted file
-                    if "Access denied" in html or "permission" in html.lower():
-                        raise DownloaderResolutionError("Access denied. The Google Drive file is private or requires authorization.")
-                    raise DownloaderResolutionError("Could not resolve Google Drive confirmation link.")
-
-                # Extract filename from html title or fallback
-                title_match = re.search(r'<title>([^<]+)</title>', html)
-                filename = f"gdrive_{file_id}.bin"
-                if title_match:
-                    title_text = title_match.group(1).replace(" - Google Drive", "").strip()
-                    if title_text and not title_text.startswith("Google Drive -"):
-                        filename = sanitize_filename(title_text)
-
-                metadata = FileMetadata(
-                    filename=filename,
-                    filesize=None,
-                    mime_type=get_mime_type(filename),
-                    source_service=self.name,
-                    is_direct=True,
-                    extra={"file_id": file_id}
-                )
-
-                return ResolvedURL(
-                    direct_url=direct_url,
-                    headers={"User-Agent": DEFAULT_USER_AGENT},
-                    metadata=metadata
-                )
+            # Fallback to direct usercontent download endpoint with confirm=t
+            fallback_url = f"https://drive.usercontent.google.com/download?id={file_id}&export=download&authuser=0&confirm=t"
+            return ResolvedURL(
+                direct_url=fallback_url,
+                headers={"User-Agent": DEFAULT_USER_AGENT},
+                metadata=FileMetadata(filename=f"gdrive_{file_id}.bin", source_service=self.name, is_direct=True)
+            )
 
         except DownloaderResolutionError:
             raise

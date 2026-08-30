@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     )
 
     # File Paths
+    DATA_DIR: str = Field(default="./data", description="Data directory for sessions and SQLite")
     DOWNLOAD_DIR: str = Field(default="./downloads", description="Base download directory")
     TEMP_DIR: str = Field(default="./temp", description="Temporary files directory")
     LOG_DIR: str = Field(default="./logs", description="Logs directory")
@@ -61,7 +62,22 @@ class Settings(BaseSettings):
 
     # Optional Service Credentials
     TERABOX_COOKIE: Optional[str] = Field(default="", description="Optional TeraBox ndus cookie for premium/fast downloads")
+    GOFILE_TOKEN: Optional[str] = Field(default="", description="Optional GoFile account token for higher rate limits")
+    GOFILE_API_TOKEN: Optional[str] = Field(default=None, description="Optional GoFile API token")
+    GOFILE_API_TIMEOUT: int = Field(default=30, description="GoFile API request timeout in seconds")
+    GOFILE_CACHE_TTL: int = Field(default=900, description="GoFile resolved download URL cache TTL in seconds")
+    GOFILE_MAX_RETRIES: int = Field(default=3, description="GoFile resolution retry attempts")
     ONEFICHIER_API_KEY: Optional[str] = Field(default="", description="Optional 1fichier API key for instant download direct links")
+
+    # Metrics & Prometheus
+    METRICS_ENABLED: bool = Field(default=False, description="Enable Prometheus /metrics HTTP server")
+    METRICS_PORT: int = Field(default=9090, description="Prometheus metrics HTTP server port")
+
+    # Telegram Channels & Security Modes
+    LOG_CHANNEL_ID: Optional[Union[int, str]] = Field(default=None, description="Telegram channel ID/username for event logs (e.g. -1001234567890)")
+    BACKUP_CHANNEL_ID: Optional[Union[int, str]] = Field(default=None, description="Telegram dump channel ID/username for media backup (e.g. -1009876543210)")
+    PRIVATE_MODE: bool = Field(default=False, description="Enforce whitelist-only access to bot")
+    FORCE_SUB_CHANNEL: Optional[Union[int, str]] = Field(default="", description="Force subscription Telegram channel (e.g. @MyChannel or -100...)")
 
     @property
     def max_download_bytes(self) -> int:
@@ -82,8 +98,25 @@ class Settings(BaseSettings):
             return [v]
         return []
 
+    @field_validator("LOG_CHANNEL_ID", "BACKUP_CHANNEL_ID", "FORCE_SUB_CHANNEL", mode="before")
+    @classmethod
+    def parse_channel_id(cls, v):
+        if v is None or v == "":
+            return None
+        if isinstance(v, int):
+            return v
+        s = str(v).strip()
+        if not s:
+            return None
+        if s.startswith("-") and s[1:].isdigit():
+            return int(s)
+        if s.isdigit():
+            return int(s)
+        return s
+
     def ensure_directories(self) -> None:
         """Ensure all required runtime directories exist."""
+        os.makedirs(self.DATA_DIR, exist_ok=True)
         os.makedirs(self.DOWNLOAD_DIR, exist_ok=True)
         os.makedirs(self.TEMP_DIR, exist_ok=True)
         os.makedirs(self.LOG_DIR, exist_ok=True)

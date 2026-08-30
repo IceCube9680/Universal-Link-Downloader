@@ -52,14 +52,26 @@ def get_cancel_keyboard(job_id: str) -> InlineKeyboardMarkup:
 
 
 def get_admin_dashboard_keyboard() -> InlineKeyboardMarkup:
-    """Interactive Admin Dashboard navigation keyboard."""
+    """Interactive Admin Dashboard navigation keyboard with multi-tab support."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📊 System Metrics", callback_data="admin_tab:metrics"),
-            InlineKeyboardButton("📋 Active Jobs", callback_data="admin_tab:jobs")
+            InlineKeyboardButton("📊 Overview", callback_data="admin_tab:overview"),
+            InlineKeyboardButton("📈 Live Metrics", callback_data="admin_tab:metrics")
         ],
         [
-            InlineKeyboardButton("👥 Users List", callback_data="admin_tab:users"),
+            InlineKeyboardButton("📋 Jobs Queue", callback_data="admin_tab:jobs"),
+            InlineKeyboardButton("👥 User Manager", callback_data="admin_tab:users")
+        ],
+        [
+            InlineKeyboardButton("🖥️ Worker Nodes", callback_data="admin_tab:workers"),
+            InlineKeyboardButton("🔒 Whitelist / Auth", callback_data="admin_tab:whitelist")
+        ],
+        [
+            InlineKeyboardButton("📜 System Logs", callback_data="admin_tab:logs"),
+            InlineKeyboardButton("📡 Backup Channel", callback_data="admin_tab:backup")
+        ],
+        [
+            InlineKeyboardButton("🔒 Toggle Private", callback_data="admin_tab:toggle_private"),
             InlineKeyboardButton("🧹 Clear Cache", callback_data="admin_tab:clearcache")
         ],
         [

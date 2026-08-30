@@ -30,6 +30,8 @@ class DownloadResult:
     filesize: int
     mime_type: str
     duration_seconds: float = 0.0
+    source_url: str = ""
+    service_name: str = ""
 
 
 # Progress callback signature:

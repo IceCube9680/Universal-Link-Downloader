@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import time
 from typing import Dict, List, Optional
 from pyrogram import Client
@@ -13,8 +14,10 @@ from app.core.exceptions import (
     FileSizeLimitError,
     JobNotFoundError,
     SSRFError,
+    TelegramUploadError,
     UserLimitExceededError
 )
+from app.core.channel_logger import channel_logger
 from app.core.logging import get_logger
 from app.core.metrics import metrics
 from app.core.rate_limit import rate_limiter
@@ -36,6 +39,10 @@ logger = get_logger("queue_manager")
 
 
 class JobQueue:
+    """
+    Advanced Priority Queue Manager supporting both standalone in-memory execution
+    and clustered distributed Redis workers.
+    """
     def __init__(self, db: Optional[Database] = None):
         self.db = db
         self.job_repo: Optional[JobRepository] = None
@@ -46,7 +53,7 @@ class JobQueue:
 
         self._active_jobs: Dict[str, JobContext] = {}
         self._user_job_map: Dict[int, List[str]] = {}
-        self._queue: asyncio.Queue[JobContext] = asyncio.Queue()
+        self._queue: asyncio.PriorityQueue[JobContext] = asyncio.PriorityQueue()
         self._workers: List[asyncio.Task] = []
         self._is_running = False
         self._client: Optional[Client] = None
@@ -76,6 +83,8 @@ class JobQueue:
         # Cancel all active jobs
         for job_id, ctx in list(self._active_jobs.items()):
             ctx.cancel()
+            if redis_manager.is_connected:
+                await redis_manager.publish_cancel(job_id)
             fs_manager.cleanup_job_dir(job_id)
 
         # Cancel worker tasks
@@ -97,7 +106,7 @@ class JobQueue:
         custom_filename: Optional[str] = None
     ) -> JobContext:
         """
-        Validate rate limits, user limits, deduplicate, create job record, and enqueue.
+        Validate rate limits, user limits, deduplicate, create job record, and enqueue with priority.
         """
         # 0. Check Sliding Window Rate Limit
         allowed, remaining, retry_after = await rate_limiter.is_allowed(user_id)
@@ -123,7 +132,7 @@ class JobQueue:
                     f"You have reached your daily download limit of {settings.MAX_DAILY_DOWNLOADS_PER_USER} files."
                 )
 
-        # 2. In-flight URL deduplication
+        # 2. In-flight URL deduplication (Local & Distributed)
         for j_id in user_jobs:
             existing = self._active_jobs.get(j_id)
             if existing and existing.url == clean_url:
@@ -131,7 +140,11 @@ class JobQueue:
                     f"This URL is already being processed (Job #{existing.job_id}, Status: {existing.status.value})."
                 )
 
-        # 3. Create context and DB record
+        # 3. Calculate priority (Admin/VIP = 1, Normal = 5)
+        is_admin = user_id in settings.ADMIN_IDS
+        priority = 1 if is_admin else 5
+
+        # 4. Create context and DB record
         ctx = JobContext(
             user_id=user_id,
             chat_id=chat_id,
@@ -139,11 +152,16 @@ class JobQueue:
             url=clean_url,
             upload_mode=upload_mode,
             filename=custom_filename or "",
-            status=JobStatus.QUEUED
+            status=JobStatus.QUEUED,
+            priority=priority
         )
 
         self._active_jobs[ctx.job_id] = ctx
         self._user_job_map.setdefault(user_id, []).append(ctx.job_id)
+
+        # Distributed lock if Redis is active
+        if redis_manager.is_connected:
+            await redis_manager.acquire_url_lock(user_id, clean_url, ctx.job_id)
 
         if self.job_repo:
             db_job = DownloadJob(
@@ -158,21 +176,56 @@ class JobQueue:
             )
             await self.job_repo.create_job(db_job)
 
-        await self._queue.put(ctx)
-        logger.info("Enqueued job %s for user %d (URL: %s)", ctx.job_id, user_id, clean_url)
+        # 5. Push to Redis or in-memory priority queue
+        if redis_manager.is_connected:
+            priority_label = "HIGH" if is_admin else "NORMAL"
+            await redis_manager.push_job(ctx.to_dict(), priority=priority_label)
+            logger.info("Pushed job %s to Redis queue (%s priority) for user %d", ctx.job_id, priority_label, user_id)
+        else:
+            await self._queue.put(ctx)
+            logger.info("Enqueued job %s to local PriorityQueue (priority=%d) for user %d", ctx.job_id, priority, user_id)
+
+        asyncio.create_task(channel_logger.log_job_started(self._client, ctx.job_id, ctx.user_id, ctx.url, ctx.service_name))
+
         return ctx
 
     def get_job(self, job_id: str) -> Optional[JobContext]:
         return self._active_jobs.get(job_id)
 
+    async def cancel_job_async(self, job_id: str, user_id: Optional[int] = None) -> bool:
+        """Cancel a job locally and broadcast to distributed cluster."""
+        ctx = self._active_jobs.get(job_id)
+        if ctx:
+            if user_id and ctx.user_id != user_id and user_id not in settings.ADMIN_IDS:
+                return False
+            ctx.cancel()
+
+        # Broadcast cancellation signal to Redis
+        if redis_manager.is_connected:
+            await redis_manager.publish_cancel(job_id)
+            if ctx:
+                await redis_manager.release_url_lock(ctx.user_id, ctx.url)
+
+        fs_manager.cleanup_job_dir(job_id)
+        return True
+
     def cancel_job(self, job_id: str, user_id: Optional[int] = None) -> bool:
+        """Synchronous helper for cancelling jobs."""
         ctx = self._active_jobs.get(job_id)
         if not ctx:
+            if redis_manager.is_connected:
+                asyncio.create_task(redis_manager.publish_cancel(job_id))
+                return True
             return False
-        if user_id and ctx.user_id != user_id:
+
+        if user_id and ctx.user_id != user_id and user_id not in settings.ADMIN_IDS:
             return False
 
         ctx.cancel()
+        if redis_manager.is_connected:
+            asyncio.create_task(redis_manager.publish_cancel(job_id))
+            asyncio.create_task(redis_manager.release_url_lock(ctx.user_id, ctx.url))
+
         fs_manager.cleanup_job_dir(job_id)
         return True
 
@@ -200,21 +253,38 @@ class JobQueue:
             logger.debug("Unexpected error editing message: %s", e)
 
     async def _worker_loop(self, worker_id: int) -> None:
-        """Worker loop processing jobs from the async queue."""
+        """Worker loop processing jobs from the PriorityQueue or Redis."""
         logger.debug("Worker %d loop started", worker_id)
         while self._is_running:
             try:
-                ctx = await self._queue.get()
+                # If Redis is connected, prioritize polling from Redis
+                if redis_manager.is_connected:
+                    raw_job = await redis_manager.pop_job(timeout=2)
+                    if raw_job:
+                        ctx = JobContext.from_dict(raw_job)
+                        self._active_jobs[ctx.job_id] = ctx
+                        self._user_job_map.setdefault(ctx.user_id, []).append(ctx.job_id)
+                    else:
+                        await asyncio.sleep(0.5)
+                        continue
+                else:
+                    ctx = await self._queue.get()
             except asyncio.CancelledError:
                 break
+            except Exception as e:
+                logger.debug("Worker %d queue poll error: %s", worker_id, e)
+                await asyncio.sleep(1)
+                continue
 
-            if ctx.cancel_event.is_set():
+            if ctx.cancel_event.is_set() or (redis_manager.is_connected and await redis_manager.is_job_cancelled(ctx.job_id)):
                 self._cleanup_job(ctx)
-                self._queue.task_done()
+                if not redis_manager.is_connected:
+                    self._queue.task_done()
                 continue
 
             try:
                 ctx.task = asyncio.current_task()
+                ctx.worker_id = f"worker_{worker_id}"
                 await self._process_job(ctx)
             except asyncio.CancelledError:
                 logger.info("Job %s processing cancelled", ctx.job_id)
@@ -222,16 +292,21 @@ class JobQueue:
                 logger.error("Unhandled error processing job %s: %s", ctx.job_id, e, exc_info=True)
             finally:
                 self._cleanup_job(ctx)
-                self._queue.task_done()
+                if not redis_manager.is_connected:
+                    self._queue.task_done()
 
     async def _process_job(self, ctx: JobContext) -> None:
         """
         Execute full download, resolution, and upload pipeline for a job.
         """
         job_logger = get_logger("queue_worker", job_id=ctx.job_id)
-        job_logger.info("Processing job %s for user %d", ctx.job_id, ctx.user_id)
+        job_logger.info("Processing job %s for user %d (Priority: %d)", ctx.job_id, ctx.user_id, ctx.priority)
 
         try:
+            # Check distributed cancellation
+            if redis_manager.is_connected and await redis_manager.is_job_cancelled(ctx.job_id):
+                raise CancelledError("Job cancelled before start")
+
             # 1. RESOLVING
             ctx.status = JobStatus.RESOLVING
             ctx.started_at = time.time()
@@ -257,8 +332,6 @@ class JobQueue:
             if ctx.filesize and ctx.filesize > settings.max_download_bytes:
                 raise FileSizeLimitError(ctx.filesize, settings.max_download_bytes)
 
-            size_str = format_filesize(ctx.filesize) if ctx.filesize else "Unknown"
-
             # 2. DOWNLOADING
             ctx.status = JobStatus.DOWNLOADING
             if self.job_repo:
@@ -273,6 +346,13 @@ class JobQueue:
                     return
                 text = tracker.format_download_message()
                 await self._safe_edit_message(ctx.chat_id, ctx.message_id, text)
+                if redis_manager.is_connected:
+                    await redis_manager.publish_progress(ctx.job_id, {
+                        "status": "DOWNLOADING",
+                        "progress": tracker.percentage,
+                        "downloaded": tracker.downloaded_bytes,
+                        "speed": tracker.speed
+                    })
                 if self.job_repo:
                     await self.job_repo.update_status(
                         ctx.job_id,
@@ -313,6 +393,13 @@ class JobQueue:
                     return
                 text = tracker.format_upload_message()
                 await self._safe_edit_message(ctx.chat_id, ctx.message_id, text)
+                if redis_manager.is_connected:
+                    await redis_manager.publish_progress(ctx.job_id, {
+                        "status": "UPLOADING",
+                        "progress": tracker.percentage,
+                        "uploaded": tracker.uploaded_bytes,
+                        "speed": tracker.speed
+                    })
                 if self.job_repo:
                     await self.job_repo.update_status(
                         ctx.job_id,
@@ -331,7 +418,7 @@ class JobQueue:
             if not self._client:
                 raise TelegramUploadError("Telegram client is not connected.")
 
-            await telegram_uploader.upload_file(
+            sent_msg = await telegram_uploader.upload_file(
                 client=self._client,
                 chat_id=ctx.chat_id,
                 file_path=download_result.file_path,
@@ -342,10 +429,39 @@ class JobQueue:
                 cancel_event=ctx.cancel_event
             )
 
+            # Backup Channel Forwarding
+            if settings.BACKUP_CHANNEL_ID and sent_msg and self._client:
+                try:
+                    svc_tag = re.sub(r'[^a-zA-Z0-9_]', '', str(ctx.service_name).lower().replace(' ', '_'))
+                    backup_caption = (
+                        f"📄 **{ctx.filename}**\n"
+                        f"📦 **Size:** {format_filesize(ctx.filesize)}\n"
+                        f"👤 **User:** `{ctx.user_id}`\n"
+                        f"🌐 **Source:** {ctx.service_name}\n"
+                        f"🆔 **Job:** `#{ctx.job_id}`\n\n"
+                        f"#backup #job_{ctx.job_id} #user_{ctx.user_id} #{svc_tag}"
+                    )
+                    try:
+                        await self._client.copy_message(
+                            chat_id=settings.BACKUP_CHANNEL_ID,
+                            from_chat_id=sent_msg.chat.id,
+                            message_id=sent_msg.id,
+                            caption=backup_caption
+                        )
+                    except Exception as copy_err:
+                        logger.debug("copy_message to backup channel failed (%s), trying forward_messages", copy_err)
+                        await self._client.forward_messages(
+                            chat_id=settings.BACKUP_CHANNEL_ID,
+                            from_chat_id=sent_msg.chat.id,
+                            message_ids=[sent_msg.id]
+                        )
+                except Exception as be:
+                    logger.warning("Failed to forward backup copy to BACKUP_CHANNEL_ID (%s): %s", settings.BACKUP_CHANNEL_ID, be)
+
             # 5. COMPLETED
             ctx.status = JobStatus.COMPLETED
             ctx.completed_at = time.time()
-            metrics.record_job_complete(download_result.filesize, download_result.filesize)
+            metrics.record_job_complete(download_result.filesize or 0, download_result.filesize or 0)
             if self.job_repo:
                 await self.job_repo.update_status(
                     ctx.job_id, ctx.status.value,
@@ -354,11 +470,13 @@ class JobQueue:
                     completed_at=utcnow_str()
                 )
 
-            # Delete the progress message or update to finished
             await self._safe_edit_message(
                 ctx.chat_id, ctx.message_id,
                 f"✅ **Download & Upload Completed!**\n\n📄 **File:** `{ctx.filename}`\n📦 **Size:** `{format_filesize(ctx.filesize)}`"
             )
+            asyncio.create_task(channel_logger.log_job_completed(
+                self._client, ctx.job_id, ctx.user_id, ctx.filename or "file", ctx.filesize or 0, ctx.service_name, ctx.duration
+            ))
             job_logger.info("Job %s completed successfully", ctx.job_id)
 
         except CancelledError:
@@ -368,8 +486,9 @@ class JobQueue:
                 await self.job_repo.update_status(ctx.job_id, ctx.status.value, error="Cancelled by user")
             await self._safe_edit_message(
                 ctx.chat_id, ctx.message_id,
-                f"🛑 **Download Cancelled**\n\nJob #{ctx.job_id} was cancelled."
+                f"🛑 **Download Cancelled**\n\nJob `#{ctx.job_id}` was cancelled."
             )
+            asyncio.create_task(channel_logger.log_job_cancelled(self._client, ctx.job_id, ctx.user_id))
             job_logger.info("Job %s was cancelled", ctx.job_id)
 
         except DownloaderError as de:
@@ -380,9 +499,10 @@ class JobQueue:
                 await self.job_repo.update_status(ctx.job_id, ctx.status.value, error=de.message)
             await self._safe_edit_message(
                 ctx.chat_id, ctx.message_id,
-                f"{de.user_message}\n\n**Job ID:** `{ctx.job_id}`"
+                f"❌ **Download Failed**\n\n⚠️ {de.user_message}"
             )
-            job_logger.error("Job %s failed with domain error: %s", ctx.job_id, de)
+            asyncio.create_task(channel_logger.log_job_failed(self._client, ctx.job_id, ctx.user_id, ctx.service_name, de.message))
+            job_logger.warning("Job %s failed: %s", ctx.job_id, de)
 
         except Exception as e:
             ctx.status = JobStatus.FAILED
@@ -392,11 +512,14 @@ class JobQueue:
                 await self.job_repo.update_status(ctx.job_id, ctx.status.value, error=str(e))
             await self._safe_edit_message(
                 ctx.chat_id, ctx.message_id,
-                f"❌ **An error occurred during processing.**\n\n**Error:** {str(e)[:200]}\n**Job ID:** `{ctx.job_id}`"
+                f"❌ **Unexpected Error**\n\n⚠️ `{str(e)[:150]}`"
             )
+            asyncio.create_task(channel_logger.log_job_failed(self._client, ctx.job_id, ctx.user_id, ctx.service_name, str(e)))
             job_logger.error("Job %s failed with unexpected exception: %s", ctx.job_id, e, exc_info=True)
 
         finally:
+            if redis_manager.is_connected:
+                await redis_manager.release_url_lock(ctx.user_id, ctx.url)
             fs_manager.cleanup_job_dir(ctx.job_id)
 
     def _cleanup_job(self, ctx: JobContext) -> None:

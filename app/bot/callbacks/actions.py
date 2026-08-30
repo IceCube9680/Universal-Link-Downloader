@@ -1,6 +1,8 @@
 from pyrogram import Client, filters
+from pyrogram.errors import MessageNotModified
 from pyrogram.types import CallbackQuery
 
+from app.bot.handlers.messages import check_user_access
 from app.bot.ui.keyboards import (
     get_settings_keyboard,
     get_start_keyboard
@@ -18,89 +20,129 @@ from app.utils.filesize import format_filesize
 def register_callback_handlers(app: Client, db: Database) -> None:
     user_repo = UserRepository(db)
 
-    @app.on_callback_query()
+    @app.on_callback_query(~filters.regex(r"^admin_tab:"))
     async def callback_router(client: Client, callback_query: CallbackQuery):
         data = callback_query.data or ""
         user = callback_query.from_user
         if not user:
-            await callback_query.answer()
+            try:
+                await callback_query.answer()
+            except Exception:
+                pass
             return
 
-        # 1. Cancel download
-        if data.startswith("dl_cancel:"):
-            job_id = data.split(":", 1)[1]
-            success = job_queue.cancel_job(job_id, user_id=user.id)
-            if success:
-                await callback_query.answer("🛑 Job cancelled!", show_alert=True)
-                await callback_query.edit_message_text(f"🛑 **Job `#{job_id}` was cancelled.**")
-            else:
-                await callback_query.answer("❌ Job not found or already completed.", show_alert=True)
+        allowed, err_text, _, _ = await check_user_access(
+            client, user_repo, user.id, user.username, user.first_name
+        )
+        if not allowed:
+            await callback_query.answer("🔒 Access restricted (Private mode active).", show_alert=True)
+            return
 
-        # 2. Toggle Upload Mode
-        elif data.startswith("set_mode:"):
-            new_mode = data.split(":", 1)[1]
-            await user_repo.update_upload_mode(user.id, new_mode)
-            await callback_query.answer(f"✅ Upload mode set to {new_mode.title()}!")
-            await callback_query.edit_message_reply_markup(
-                reply_markup=get_settings_keyboard(new_mode)
-            )
+        try:
+            # 1. Cancel download
+            if data.startswith("dl_cancel:"):
+                job_id = data.split(":", 1)[1]
+                success = job_queue.cancel_job(job_id, user_id=user.id)
+                if success:
+                    await callback_query.answer("🛑 Job cancelled!", show_alert=True)
+                    try:
+                        await callback_query.edit_message_text(f"🛑 **Job `#{job_id}` was cancelled.**")
+                    except MessageNotModified:
+                        pass
+                else:
+                    await callback_query.answer("❌ Job not found or already completed.", show_alert=True)
 
-        # 3. View Settings
-        elif data == "settings:view":
-            db_user = await user_repo.get_or_create(user.id, user.username, user.first_name)
-            current_mode = db_user.upload_mode or "DOCUMENT"
-            text = (
-                "⚙️ **Bot Settings**\n\n"
-                "Choose your preferred upload format for media files:\n\n"
-                "• **Document:** Send all files as Telegram documents (preserves raw quality).\n"
-                "• **Media:** Automatically send videos and audio with streaming players and thumbnails."
-            )
-            await callback_query.edit_message_text(
-                text,
-                reply_markup=get_settings_keyboard(current_mode)
-            )
-            await callback_query.answer()
+            # 2. Toggle Upload Mode
+            elif data.startswith("set_mode:"):
+                new_mode = data.split(":", 1)[1]
+                await user_repo.update_upload_mode(user.id, new_mode)
+                await callback_query.answer(f"✅ Upload mode set to {new_mode.title()}!")
+                try:
+                    await callback_query.edit_message_reply_markup(
+                        reply_markup=get_settings_keyboard(new_mode)
+                    )
+                except MessageNotModified:
+                    pass
 
-        # 4. View Help
-        elif data == "help:view":
-            await callback_query.edit_message_text(
-                get_help_message(),
-                reply_markup=get_start_keyboard(),
-                disable_web_page_preview=True
-            )
-            await callback_query.answer()
-
-        # 5. View Start
-        elif data == "start:view":
-            text = get_start_message(user.first_name or "User")
-            await callback_query.edit_message_text(
-                text,
-                reply_markup=get_start_keyboard(),
-                disable_web_page_preview=True
-            )
-            await callback_query.answer()
-
-        # 6. View Status
-        elif data == "status:view":
-            active_jobs = job_queue.get_user_active_jobs(user.id)
-            if not active_jobs:
-                await callback_query.answer("ℹ️ No active downloads.", show_alert=True)
-                return
-
-            lines = ["📊 **Your Active Downloads:**\n"]
-            for job in active_jobs:
-                size_str = format_filesize(job.filesize) if job.filesize else "Calculating..."
-                lines.append(
-                    f"• **Job ID:** `{job.job_id}`\n"
-                    f"  📄 `{job.filename or 'Resolving...'}` ({size_str})\n"
-                    f"  ⚡ Status: `{job.status.value}`\n"
+            # 3. View Settings
+            elif data == "settings:view":
+                db_user = await user_repo.get_or_create(user.id, user.username, user.first_name)
+                current_mode = db_user.upload_mode or "DOCUMENT"
+                text = (
+                    "⚙️ **Bot Settings**\n\n"
+                    "Choose your preferred upload format for media files:\n\n"
+                    "• **Document:** Send all files as Telegram documents (preserves raw quality).\n"
+                    "• **Media:** Automatically send videos and audio with streaming players and thumbnails."
                 )
-            await callback_query.edit_message_text(
-                "\n".join(lines),
-                reply_markup=get_start_keyboard(),
-                disable_web_page_preview=True
-            )
-            await callback_query.answer()
+                try:
+                    await callback_query.edit_message_text(
+                        text,
+                        reply_markup=get_settings_keyboard(current_mode)
+                    )
+                except MessageNotModified:
+                    pass
+                await callback_query.answer()
 
-        else:
-            await callback_query.answer()
+            # 4. View Help
+            elif data == "help:view":
+                try:
+                    await callback_query.edit_message_text(
+                        get_help_message(),
+                        reply_markup=get_start_keyboard(),
+                        disable_web_page_preview=True
+                    )
+                except MessageNotModified:
+                    pass
+                await callback_query.answer()
+
+            # 5. View Start
+            elif data == "start:view":
+                text = get_start_message(user.first_name or "User")
+                try:
+                    await callback_query.edit_message_text(
+                        text,
+                        reply_markup=get_start_keyboard(),
+                        disable_web_page_preview=True
+                    )
+                except MessageNotModified:
+                    pass
+                await callback_query.answer()
+
+            # 6. View Status
+            elif data == "status:view":
+                active_jobs = job_queue.get_user_active_jobs(user.id)
+                if not active_jobs:
+                    await callback_query.answer("ℹ️ No active downloads.", show_alert=True)
+                    return
+
+                lines = ["📊 **Your Active Downloads:**\n"]
+                for job in active_jobs:
+                    size_str = format_filesize(job.filesize) if job.filesize else "Calculating..."
+                    lines.append(
+                        f"• **Job ID:** `{job.job_id}`\n"
+                        f"  📄 `{job.filename or 'Resolving...'}` ({size_str})\n"
+                        f"  ⚡ Status: `{job.status.value}`\n"
+                    )
+                try:
+                    await callback_query.edit_message_text(
+                        "\n".join(lines),
+                        reply_markup=get_start_keyboard(),
+                        disable_web_page_preview=True
+                    )
+                except MessageNotModified:
+                    pass
+                await callback_query.answer()
+
+            else:
+                await callback_query.answer()
+
+        except MessageNotModified:
+            try:
+                await callback_query.answer()
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                await callback_query.answer(f"Error: {str(e)[:50]}", show_alert=True)
+            except Exception:
+                pass

@@ -1,6 +1,9 @@
 import asyncio
 import re
-from typing import Optional
+import random
+import urllib.parse
+import json
+from typing import Optional, Dict, Any, List
 import aiohttp
 
 from app.core.config import settings
@@ -22,14 +25,44 @@ logger = get_logger("terabox_downloader")
 
 TERABOX_DOMAINS = [
     "terabox.com",
+    "terabox.app",
     "teraboxapp.com",
     "1024tera.com",
-    "terabox.link",
-    "freeterabox.com",
-    "mirrobox.com",
+    "1024terabox.com",
+    "teraboxshare.com",
+    "teraboxlink.com",
+    "terasharefile.com",
+    "terafileshare.com",
+    "terasharelink.com",
     "nephobox.com",
-    "4funbox.com"
+    "freeterabox.com",
+    "4funbox.com",
+    "mirrobox.com",
+    "mirrorbox.com",
+    "momerybox.com",
+    "tibibox.com",
+    "terabox.link"
 ]
+
+
+def generate_dplogid(uk: str = "") -> str:
+    session_id = str(random.randint(100000, 999999))
+    user_id = str(uk) if (uk and len(str(uk)) == 10) else f"00{random.randint(10000000, 99999999)}"
+    count_id = "0001"
+    return f"{session_id}{user_id}{count_id}"
+
+
+def format_terabox_cookie(cookie_raw: Optional[str]) -> str:
+    if not cookie_raw:
+        return ""
+    cookie_str = str(cookie_raw).strip().strip('"\'').strip()
+    if not cookie_str:
+        return ""
+    if "ndus=" not in cookie_str and "=" not in cookie_str:
+        cookie_str = f"ndus={cookie_str}"
+    if "lang=" not in cookie_str:
+        cookie_str = f"{cookie_str}; lang=en"
+    return cookie_str
 
 
 class TeraBoxDownloader(BaseDownloader):
@@ -48,24 +81,44 @@ class TeraBoxDownloader(BaseDownloader):
 
     def extract_surl(self, url: str) -> Optional[str]:
         """
-        Extract TeraBox shorturl key (surl) from links:
+        Extract TeraBox shorturl key across all clone and mirror link variations:
+        - https://teraboxshare.com/s/1jo_gPZiIhpMwKGFwFPPgvQ
         - https://terabox.com/s/1abc12345
         - https://1024tera.com/s/1xyz987
+        - https://www.1024tera.com/wap/share/filelist?surl=WEUA8kuiwqs-1piiDAh2TQ
         - https://teraboxapp.com/sharing/link?surl=abc12345
+        - https://diskwala.com/wap/share/filelist?surl=...
+        - https://mirrobox.com/s/abc12345
         """
-        # Format 1: /s/1<key> or /s/<key>
-        match = re.search(r'/s/(?:1)?([a-zA-Z0-9_-]+)', url)
-        if match:
-            key = match.group(1)
-            return key if key.startswith("1") else f"1{key}"
-
-        # Format 2: ?surl=<key>
-        match_q = re.search(r'[?&]surl=([a-zA-Z0-9_-]+)', url)
+        # Format 1: ?surl=<key> or &shorturl=<key>
+        match_q = re.search(r'[?&](?:surl|shorturl)=([a-zA-Z0-9_-]+)', url)
         if match_q:
-            key = match_q.group(1)
-            return key if key.startswith("1") else f"1{key}"
+            return match_q.group(1)
+
+        # Format 2: /s/<key>, /wap/share/filelist/<key>, /sharing/link/<key>, /app/<key>
+        match = re.search(r'/(?:s|wap/share/filelist|sharing/link|app)/([a-zA-Z0-9_-]+)', url)
+        if match:
+            return match.group(1)
+
+        # Format 3: /sharing/<key> or /share/<key>
+        match_share = re.search(r'/(?:sharing|share)/([a-zA-Z0-9_-]+)', url)
+        if match_share:
+            return match_share.group(1)
 
         return None
+
+    def _get_surl_candidates(self, surl: str) -> List[str]:
+        """
+        Return shorturl candidate variations (stripped '1' first, then original with '1').
+        """
+        candidates = []
+        if surl.startswith("1") and len(surl) > 1:
+            candidates.append(surl[1:])
+            candidates.append(surl)
+        else:
+            candidates.append(surl)
+            candidates.append(f"1{surl}")
+        return list(dict.fromkeys(candidates))
 
     async def get_metadata(
         self,
@@ -86,83 +139,201 @@ class TeraBoxDownloader(BaseDownloader):
         if not surl:
             raise DownloaderResolutionError(f"Could not parse TeraBox surl from: {url}")
 
-        api_url = f"https://www.terabox.com/share/list?app_id=250528&shorturl={surl}&root=1"
+        surl_candidates = self._get_surl_candidates(surl)
+        cookie_header = format_terabox_cookie(settings.TERABOX_COOKIE)
 
-        headers = {
-            "User-Agent": DEFAULT_USER_AGENT,
-            "Referer": "https://www.terabox.com/",
-            "Accept": "application/json, text/plain, */*"
+        base_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9"
         }
-
-        if settings.TERABOX_COOKIE:
-            cookie_val = settings.TERABOX_COOKIE.strip()
-            if not cookie_val.startswith("ndus="):
-                cookie_val = f"ndus={cookie_val}"
-            headers["Cookie"] = cookie_val
+        if cookie_header:
+            base_headers["Cookie"] = cookie_header
 
         should_close = False
         if session is None:
-            session = aiohttp.ClientSession(headers=headers)
+            session = aiohttp.ClientSession()
             should_close = True
 
+        last_error = None
+        need_verify = False
+        expired_count = 0
+
         try:
-            async with session.get(api_url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                if resp.status != 200:
-                    raise DownloaderResolutionError(f"TeraBox API returned HTTP {resp.status}")
+            # 1. Attempt dynamic session handshake by scraping jsToken & templateData from share page
+            js_token = ""
+            bdstoken = ""
+            pcftoken = ""
+            uk = ""
 
-                data = await resp.json()
-                errno = data.get("errno", -1)
+            hosts = [
+                "www.terabox.app",
+                "www.1024tera.com",
+                "www.terabox.com",
+                "www.freeterabox.com"
+            ]
 
-                if errno != 0 or "list" not in data:
-                    if errno == 112:
-                        raise DownloaderResolutionError("TeraBox link has expired or been cancelled by the owner.")
-                    if errno == -6:
-                        raise DownloaderResolutionError("TeraBox requires authentication (set TERABOX_COOKIE in .env).")
-                    raise DownloaderResolutionError(f"TeraBox API error (code {errno}): {data.get('errmsg', 'Unknown')}")
+            for s_key in surl_candidates:
+                for host in hosts:
+                    page_url = f"https://{host}/sharing/link?surl={s_key}"
+                    try:
+                        async with session.get(page_url, headers=base_headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                            if resp.status == 200:
+                                # In mock unit tests or json-direct responses, resp.json() might have list directly
+                                try:
+                                    data = await resp.json()
+                                    if isinstance(data, dict) and data.get("errno") == 0 and "list" in data:
+                                        return self._parse_file_list(data, s_key, cookie_header)
+                                except Exception:
+                                    pass
 
-                file_list = data.get("list", [])
-                if not file_list:
-                    raise DownloaderResolutionError("No downloadable files found in this TeraBox folder.")
+                                html = await resp.text()
+                                # Check jsToken
+                                js_match = re.search(r'fn%28%22([A-Za-z0-9]+)%22%29', html)
+                                if not js_match:
+                                    js_match = re.search(r'jsToken\s*=\s*["\']([^"\']+)["\']', html)
+                                if js_match:
+                                    js_token = js_match.group(1)
 
-                # Pick the first file
-                file_obj = file_list[0]
-                filename = sanitize_filename(file_obj.get("server_filename") or f"terabox_{surl}.bin")
-                filesize = int(file_obj.get("size", 0))
-                direct_url = file_obj.get("dlink")
+                                # Check templateData
+                                t_match = re.search(r'templateData\s*=\s*(\{.*?\});\s*</script>', html, re.DOTALL)
+                                if t_match:
+                                    try:
+                                        t_data = json.loads(t_match.group(1))
+                                        bdstoken = t_data.get("bdstoken", "")
+                                        pcftoken = t_data.get("pcftoken", "")
+                                        uk = str(t_data.get("uk", ""))
+                                    except Exception:
+                                        pass
 
-                if not direct_url:
-                    raise DownloaderResolutionError("TeraBox API did not return direct download link (cookie may be required).")
+                                if js_token:
+                                    break
+                    except Exception as e:
+                        last_error = e
+                        continue
+                if js_token:
+                    break
 
-                metadata = FileMetadata(
-                    filename=filename,
-                    filesize=filesize,
-                    mime_type=get_mime_type(filename),
-                    source_service=self.name,
-                    is_direct=True,
-                    extra={"surl": surl}
-                )
+            dp_logid = generate_dplogid(uk)
 
-                download_headers = {
-                    "User-Agent": DEFAULT_USER_AGENT,
-                    "Referer": "https://www.terabox.com/"
+            # 2. Query official share/list with full session parameters across all surl candidates
+            for host in hosts:
+                api_headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                    "Referer": f"https://{host}/sharing/link?surl={surl}",
+                    "Accept": "application/json, text/plain, */*",
+                    "X-Requested-With": "XMLHttpRequest"
                 }
-                if settings.TERABOX_COOKIE:
-                    download_headers["Cookie"] = headers.get("Cookie", "")
+                if cookie_header:
+                    api_headers["Cookie"] = cookie_header
 
-                return ResolvedURL(
-                    direct_url=direct_url,
-                    headers=download_headers,
-                    metadata=metadata
+                for s_key in surl_candidates:
+                    params = {
+                        "app_id": "250528",
+                        "web": "1",
+                        "channel": "dubox",
+                        "clienttype": "0",
+                        "clientfrom": "h5",
+                        "shorturl": s_key,
+                        "root": "1",
+                        "page": "1",
+                        "num": "100",
+                        "order": "time",
+                        "desc": "1"
+                    }
+                    if js_token:
+                        params["jsToken"] = js_token
+                    if dp_logid:
+                        params["dp-logid"] = dp_logid
+                    if bdstoken:
+                        params["bdstoken"] = bdstoken
+                    if pcftoken:
+                        params["pcftoken"] = pcftoken
+
+                    endpoints = [
+                        f"https://{host}/share/list?" + urllib.parse.urlencode(params),
+                        f"https://{host}/api/share/list?app_id=250528&shorturl={s_key}&root=1",
+                        f"https://{host}/share/list?app_id=250528&shorturl={s_key}&root=1"
+                    ]
+
+                    for api_url in endpoints:
+                        try:
+                            async with session.get(api_url, headers=api_headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                                if resp.status != 200:
+                                    continue
+                                data = await resp.json()
+                                if not isinstance(data, dict):
+                                    continue
+
+                                errno = data.get("errno", -1)
+                                if errno == 4000020:
+                                    need_verify = True
+                                    continue
+
+                                if errno in (105, 112, 115, 140):
+                                    expired_count += 1
+                                    continue
+
+                                if errno == 0 and "list" in data:
+                                    return self._parse_file_list(data, s_key, cookie_header)
+                        except DownloaderResolutionError:
+                            raise
+                        except Exception as e:
+                            last_error = e
+                            continue
+
+            if need_verify:
+                raise DownloaderResolutionError(
+                    "TeraBox security verification required for this file.\n\n"
+                    "The shared link is protected by captcha or restricted by TeraBox. "
+                    "Make sure your `TERABOX_COOKIE` in `.env` is a fresh `ndus` cookie from your logged-in account, and restart the bot."
                 )
 
-        except DownloaderResolutionError:
-            raise
-        except Exception as e:
-            logger.error("TeraBox resolution failed for %s: %s", url, e)
-            raise DownloaderResolutionError(f"Failed to resolve TeraBox link: {e}") from e
+            if expired_count > 0:
+                raise DownloaderResolutionError("TeraBox link has expired, was cancelled, or does not exist.")
+
+            raise DownloaderResolutionError(
+                f"Failed to resolve TeraBox link across all mirrors. "
+                f"({str(last_error) if last_error else 'Link may be expired or private'})"
+            )
+
         finally:
             if should_close:
                 await session.close()
+
+    def _parse_file_list(self, data: Dict[str, Any], surl: str, cookie_header: str) -> ResolvedURL:
+        file_list = data.get("list", [])
+        if not file_list:
+            raise DownloaderResolutionError("No files found in this TeraBox folder.")
+
+        file_obj = file_list[0]
+        filename = sanitize_filename(file_obj.get("server_filename") or f"terabox_{surl}.bin")
+        filesize = int(file_obj.get("size", 0))
+        direct_url = file_obj.get("dlink")
+
+        if not direct_url:
+            raise DownloaderResolutionError("TeraBox returned file entry without direct download link.")
+
+        metadata = FileMetadata(
+            filename=filename,
+            filesize=filesize if filesize > 0 else None,
+            mime_type=get_mime_type(filename),
+            source_service=self.name,
+            is_direct=True,
+            extra={"surl": surl}
+        )
+        download_headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Referer": "https://www.terabox.app/"
+        }
+        if cookie_header:
+            download_headers["Cookie"] = cookie_header
+
+        return ResolvedURL(
+            direct_url=direct_url,
+            headers=download_headers,
+            metadata=metadata
+        )
 
     async def download(
         self,
@@ -188,7 +359,8 @@ class TeraBoxDownloader(BaseDownloader):
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
                 session=session,
-                custom_filename=final_fn
+                custom_filename=final_fn,
+                headers=resolved.headers
             )
         finally:
             if should_close:

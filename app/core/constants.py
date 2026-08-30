@@ -19,7 +19,9 @@ class UploadMode(str, Enum):
 
 class ServiceType(str, Enum):
     GENERIC = "Generic HTTP"
+    YOUTUBE = "YouTube"
     TERABOX = "TeraBox"
+    DISKWALA = "DiskWala"
     GDRIVE = "Google Drive"
     DROPBOX = "Dropbox"
     ONEDRIVE = "OneDrive"

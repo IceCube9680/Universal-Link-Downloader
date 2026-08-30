@@ -11,6 +11,7 @@ from app.downloaders.registry import DownloaderRegistry, registry
 from app.downloaders.generic import GenericHTTPDownloader
 
 # Phase 2 Adapters
+from app.downloaders.youtube import YouTubeDownloader
 from app.downloaders.mediafire import MediaFireDownloader
 from app.downloaders.pixeldrain import PixeldrainDownloader
 from app.downloaders.gofile import GoFileDownloader
@@ -18,6 +19,7 @@ from app.downloaders.dropbox import DropboxDownloader
 from app.downloaders.gdrive import GDriveDownloader
 from app.downloaders.onedrive import OneDriveDownloader
 from app.downloaders.terabox import TeraBoxDownloader
+from app.downloaders.diskwala import DiskWalaDownloader
 
 # Phase 3 Adapters
 from app.downloaders.catbox import CatboxDownloader
@@ -41,7 +43,8 @@ from app.downloaders.gcs import GCSDownloader
 from app.downloaders.azure import AzureBlobDownloader
 from app.downloaders.bunny import BunnyStorageDownloader
 
-# Register Phase 2 specialized downloaders
+# Register Specialized Downloaders
+registry.register(YouTubeDownloader())
 registry.register(MediaFireDownloader())
 registry.register(PixeldrainDownloader())
 registry.register(GoFileDownloader())
@@ -49,6 +52,7 @@ registry.register(DropboxDownloader())
 registry.register(GDriveDownloader())
 registry.register(OneDriveDownloader())
 registry.register(TeraBoxDownloader())
+registry.register(DiskWalaDownloader())
 
 # Register Phase 3 specialized downloaders
 registry.register(CatboxDownloader())
@@ -92,6 +96,7 @@ __all__ = [
     "GDriveDownloader",
     "OneDriveDownloader",
     "TeraBoxDownloader",
+    "DiskWalaDownloader",
     # Phase 3
     "CatboxDownloader",
     "UguuDownloader",

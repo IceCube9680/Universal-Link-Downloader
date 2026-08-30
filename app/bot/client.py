@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import Optional
 from pyrogram import Client
@@ -13,6 +14,9 @@ from app.core.logging import get_logger
 from app.database.database import Database
 from app.download.filesystem import fs_manager
 from app.queue.manager import job_queue
+
+from app.core.metrics import metrics
+from app.queue.redis_queue import redis_manager
 
 logger = get_logger("bot_client")
 
@@ -52,10 +56,34 @@ class UniversalBot:
         fs_manager.purge_orphaned_directories()
 
         await self.db.connect()
+
+        if settings.REDIS_URL:
+            await redis_manager.connect()
+
+        if settings.METRICS_ENABLED:
+            await metrics.start_http_exporter(port=settings.METRICS_PORT)
+
         job_queue.start_workers()
 
         if settings.BOT_TOKEN:
-            await self.app.start()
+            # Connect with automatic retry for session locks
+            for attempt in range(1, 4):
+                try:
+                    await self.app.start()
+                    break
+                except Exception as e:
+                    if "database is locked" in str(e).lower() and attempt < 3:
+                        logger.warning("Session database locked on attempt %d. Clearing journal locks and retrying...", attempt)
+                        for fname in os.listdir(settings.DATA_DIR):
+                            if fname.endswith(("-journal", "-wal", "-shm")):
+                                try:
+                                    os.remove(os.path.join(settings.DATA_DIR, fname))
+                                except Exception:
+                                    pass
+                        await asyncio.sleep(1.0)
+                    else:
+                        raise
+
             me = await self.app.get_me()
             logger.info("Bot started successfully as @%s (ID: %d)", me.username, me.id)
         else:
@@ -66,9 +94,18 @@ class UniversalBot:
         logger.info("Shutting down bot services...")
         await job_queue.stop()
 
+        if settings.METRICS_ENABLED:
+            await metrics.stop_http_exporter()
+
+        if redis_manager.is_connected:
+            await redis_manager.close()
+
         if self.app.is_connected:
             await self.app.stop()
             logger.info("Telegram client stopped.")
+
+        from app.download.manager import download_manager
+        await download_manager.close()
 
         await self.db.close()
         logger.info("Bot shutdown complete.")

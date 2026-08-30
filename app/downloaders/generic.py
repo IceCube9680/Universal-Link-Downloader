@@ -163,7 +163,8 @@ class GenericHTTPDownloader(BaseDownloader):
         progress_callback: Optional[ProgressCallback] = None,
         cancel_event: Optional[asyncio.Event] = None,
         session: Optional[aiohttp.ClientSession] = None,
-        custom_filename: Optional[str] = None
+        custom_filename: Optional[str] = None,
+        headers: Optional[dict] = None
     ) -> DownloadResult:
         await self._ensure_security(url)
         os.makedirs(destination_dir, exist_ok=True)
@@ -178,9 +179,12 @@ class GenericHTTPDownloader(BaseDownloader):
 
         start_time = time.time()
         file_path = None
+        req_headers = dict(headers) if headers else {}
+        if "User-Agent" not in req_headers:
+            req_headers["User-Agent"] = DEFAULT_USER_AGENT
 
         try:
-            async with session.get(url, allow_redirects=True) as resp:
+            async with session.get(url, headers=req_headers, allow_redirects=True) as resp:
                 if resp.status not in (200, 206):
                     raise DownloadHTTPError(resp.status, f"Remote server returned HTTP {resp.status}")
 

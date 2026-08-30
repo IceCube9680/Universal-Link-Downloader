@@ -17,6 +17,7 @@ class User:
     first_name: Optional[str] = None
     upload_mode: str = UploadMode.DOCUMENT.value
     is_banned: bool = False
+    is_whitelisted: bool = False
     created_at: str = field(default_factory=utcnow_str)
     updated_at: str = field(default_factory=utcnow_str)
 
@@ -24,19 +25,23 @@ class User:
         return asdict(self)
 
     @classmethod
-    def from_row(cls, row: Any) -> "User":
+    def from_row(cls, row: Any) -> Optional["User"]:
         if row is None:
             return None
-        if isinstance(row, dict):
+        if hasattr(row, "keys") or isinstance(row, dict):
+            r = dict(row)
+            created = r.get("created_at")
+            updated = r.get("updated_at")
             return cls(
-                id=row.get("id") or row.get("telegram_id"),
-                telegram_id=row.get("telegram_id", 0),
-                username=row.get("username"),
-                first_name=row.get("first_name"),
-                upload_mode=row.get("upload_mode", UploadMode.DOCUMENT.value),
-                is_banned=bool(row.get("is_banned", False)),
-                created_at=row.get("created_at", ""),
-                updated_at=row.get("updated_at", "")
+                id=r.get("id") or r.get("telegram_id"),
+                telegram_id=r.get("telegram_id", 0),
+                username=r.get("username"),
+                first_name=r.get("first_name"),
+                upload_mode=r.get("upload_mode", UploadMode.DOCUMENT.value),
+                is_banned=bool(r.get("is_banned", False)),
+                is_whitelisted=bool(r.get("is_whitelisted", False)),
+                created_at=str(created) if created is not None else "",
+                updated_at=str(updated) if updated is not None else ""
             )
         # SQLite Row or Tuple
         return cls(
@@ -46,8 +51,9 @@ class User:
             first_name=row[3] if len(row) > 3 else None,
             upload_mode=row[4] if len(row) > 4 else UploadMode.DOCUMENT.value,
             is_banned=bool(row[5]) if len(row) > 5 else False,
-            created_at=row[6] if len(row) > 6 else "",
-            updated_at=row[7] if len(row) > 7 else ""
+            is_whitelisted=bool(row[6]) if len(row) > 8 else bool(row[8]) if len(row) > 8 else False,
+            created_at=str(row[6]) if len(row) > 6 and row[6] is not None else "",
+            updated_at=str(row[7]) if len(row) > 7 and row[7] is not None else ""
         )
 
 
@@ -73,26 +79,30 @@ class DownloadJob:
         return asdict(self)
 
     @classmethod
-    def from_row(cls, row: Any) -> "DownloadJob":
+    def from_row(cls, row: Any) -> Optional["DownloadJob"]:
         if row is None:
             return None
-        if isinstance(row, dict):
+        if hasattr(row, "keys") or isinstance(row, dict):
+            r = dict(row)
+            created = r.get("created_at")
+            started = r.get("started_at")
+            completed = r.get("completed_at")
             return cls(
-                id=row.get("id", ""),
-                user_id=row.get("user_id", 0),
-                source_url=row.get("source_url", ""),
-                service=row.get("service", ServiceType.GENERIC.value),
-                filename=row.get("filename", ""),
-                filesize=row.get("filesize"),
-                status=row.get("status", JobStatus.QUEUED.value),
-                progress=float(row.get("progress", 0.0)),
-                downloaded_bytes=int(row.get("downloaded_bytes", 0)),
-                uploaded_bytes=int(row.get("uploaded_bytes", 0)),
-                speed=float(row.get("speed", 0.0)),
-                error=row.get("error"),
-                created_at=row.get("created_at", ""),
-                started_at=row.get("started_at"),
-                completed_at=row.get("completed_at")
+                id=r.get("id", ""),
+                user_id=r.get("user_id", 0),
+                source_url=r.get("source_url", ""),
+                service=r.get("service", ServiceType.GENERIC.value),
+                filename=r.get("filename", ""),
+                filesize=r.get("filesize"),
+                status=r.get("status", JobStatus.QUEUED.value),
+                progress=float(r.get("progress", 0.0)),
+                downloaded_bytes=int(r.get("downloaded_bytes", 0)),
+                uploaded_bytes=int(r.get("uploaded_bytes", 0)),
+                speed=float(r.get("speed", 0.0)),
+                error=r.get("error"),
+                created_at=str(created) if created is not None else "",
+                started_at=str(started) if started is not None else None,
+                completed_at=str(completed) if completed is not None else None
             )
         # SQLite Row or Tuple
         return cls(
@@ -108,9 +118,9 @@ class DownloadJob:
             uploaded_bytes=int(row[9]) if len(row) > 9 else 0,
             speed=float(row[10]) if len(row) > 10 else 0.0,
             error=row[11] if len(row) > 11 else None,
-            created_at=row[12] if len(row) > 12 else "",
-            started_at=row[13] if len(row) > 13 else None,
-            completed_at=row[14] if len(row) > 14 else None
+            created_at=str(row[12]) if len(row) > 12 and row[12] is not None else "",
+            started_at=str(row[13]) if len(row) > 13 and row[13] is not None else None,
+            completed_at=str(row[14]) if len(row) > 14 and row[14] is not None else None
         )
 
 

@@ -7,6 +7,7 @@ from app.bot.ui.keyboards import (
     get_start_keyboard
 )
 from app.bot.ui.messages import get_help_message, get_start_message
+from app.bot.handlers.messages import check_user_access
 from app.database.database import Database
 from app.database.repository import UserRepository
 from app.queue.manager import job_queue
@@ -21,7 +22,13 @@ def register_command_handlers(app: Client, db: Database) -> None:
         user = message.from_user
         if not user:
             return
-        await user_repo.get_or_create(user.id, user.username, user.first_name)
+        allowed, err_text, markup, db_user = await check_user_access(
+            client, user_repo, user.id, user.username, user.first_name
+        )
+        if not allowed:
+            await message.reply_text(err_text, reply_markup=markup)
+            return
+
         text = get_start_message(user.first_name or "User")
         await message.reply_text(
             text,
@@ -31,6 +38,15 @@ def register_command_handlers(app: Client, db: Database) -> None:
 
     @app.on_message(filters.command("help") & filters.private)
     async def help_handler(client: Client, message: Message):
+        user = message.from_user
+        if user:
+            allowed, err_text, markup, _ = await check_user_access(
+                client, user_repo, user.id, user.username, user.first_name
+            )
+            if not allowed:
+                await message.reply_text(err_text, reply_markup=markup)
+                return
+
         await message.reply_text(
             get_help_message(),
             disable_web_page_preview=True
@@ -41,7 +57,13 @@ def register_command_handlers(app: Client, db: Database) -> None:
         user = message.from_user
         if not user:
             return
-        db_user = await user_repo.get_or_create(user.id, user.username, user.first_name)
+        allowed, err_text, markup, db_user = await check_user_access(
+            client, user_repo, user.id, user.username, user.first_name
+        )
+        if not allowed:
+            await message.reply_text(err_text, reply_markup=markup)
+            return
+
         current_mode = db_user.upload_mode or "DOCUMENT"
         text = (
             "⚙️ **Bot Settings**\n\n"
@@ -59,6 +81,13 @@ def register_command_handlers(app: Client, db: Database) -> None:
         user = message.from_user
         if not user:
             return
+        allowed, err_text, markup, _ = await check_user_access(
+            client, user_repo, user.id, user.username, user.first_name
+        )
+        if not allowed:
+            await message.reply_text(err_text, reply_markup=markup)
+            return
+
         active_jobs = job_queue.get_user_active_jobs(user.id)
         if not active_jobs:
             await message.reply_text("ℹ️ You currently have no active or queued downloads.")
@@ -80,6 +109,12 @@ def register_command_handlers(app: Client, db: Database) -> None:
     async def cancel_handler(client: Client, message: Message):
         user = message.from_user
         if not user:
+            return
+        allowed, err_text, markup, _ = await check_user_access(
+            client, user_repo, user.id, user.username, user.first_name
+        )
+        if not allowed:
+            await message.reply_text(err_text, reply_markup=markup)
             return
 
         parts = message.text.split(maxsplit=1)

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
     first_name TEXT,
     upload_mode TEXT DEFAULT 'DOCUMENT',
     is_banned INTEGER DEFAULT 0,
+    is_whitelisted INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS users (
     first_name TEXT,
     upload_mode VARCHAR(32) DEFAULT 'DOCUMENT',
     is_banned BOOLEAN DEFAULT FALSE,
+    is_whitelisted BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
 );
@@ -98,40 +100,59 @@ class Database:
         self._mongo_client: Optional[AsyncIOMotorClient] = None
         self.mongo_db: Optional[AsyncIOMotorDatabase] = None
 
+    def _mask_url(self, url: str) -> str:
+        try:
+            parsed = urlparse(url)
+            if parsed.password:
+                return url.replace(parsed.password, "********")
+            return url
+        except Exception:
+            return "url_hidden"
+
+    @property
+    def pg_pool(self) -> Optional[asyncpg.Pool]:
+        return self._pg_pool
+
     async def connect(self) -> None:
-        """Connect to database and initialize schema / indexes."""
+        """Connect to database backend and initialize tables/indexes."""
         if self.is_mongodb:
-            # MongoDB backend
+            logger.info("Connecting to MongoDB: %s", self._mask_url(self.raw_url))
             self._mongo_client = AsyncIOMotorClient(self.raw_url)
             parsed = urlparse(self.raw_url)
             db_name = parsed.path.lstrip("/") or "universal_bot_db"
             self.mongo_db = self._mongo_client[db_name]
-
+            
             # Create MongoDB indexes
             await self.mongo_db.users.create_index("telegram_id", unique=True)
-            await self.mongo_db.download_jobs.create_index("id", unique=True)
             await self.mongo_db.download_jobs.create_index("user_id")
             await self.mongo_db.download_jobs.create_index("status")
             await self.mongo_db.download_jobs.create_index("created_at")
-            logger.info("Connected to MongoDB database '%s'", db_name)
+            logger.info("MongoDB indexes verified.")
 
         elif self.is_postgres:
-            # PostgreSQL backend
-            self._pg_pool = await asyncpg.create_pool(self.raw_url, min_size=2, max_size=10)
+            logger.info("Connecting to PostgreSQL: %s", self._mask_url(self.raw_url))
+            self._pg_pool = await asyncpg.create_pool(dsn=self.raw_url, min_size=2, max_size=20)
             async with self._pg_pool.acquire() as conn:
                 await conn.execute(PG_SCHEMA_SQL)
-            logger.info("Connected to PostgreSQL database pool.")
+                try:
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_whitelisted BOOLEAN DEFAULT FALSE;")
+                except Exception:
+                    pass
+            logger.info("PostgreSQL schema and tables initialized.")
 
         else:
-            # SQLite backend
-            db_dir = os.path.dirname(self.sqlite_path)
-            if db_dir:
-                os.makedirs(db_dir, exist_ok=True)
+            os.makedirs(os.path.dirname(self.sqlite_path) or ".", exist_ok=True)
+            logger.info("Connecting to SQLite: %s", self.sqlite_path)
             self._sqlite_conn = await aiosqlite.connect(self.sqlite_path)
             self._sqlite_conn.row_factory = aiosqlite.Row
             await self._sqlite_conn.executescript(SQLITE_SCHEMA_SQL)
+            try:
+                await self._sqlite_conn.execute("ALTER TABLE users ADD COLUMN is_whitelisted INTEGER DEFAULT 0;")
+                await self._sqlite_conn.commit()
+            except Exception:
+                pass
             await self._sqlite_conn.commit()
-            logger.info("Connected to SQLite database at %s", self.sqlite_path)
+            logger.info("SQLite schema and tables initialized.")
 
     async def close(self) -> None:
         """Close connections."""
@@ -146,6 +167,10 @@ class Database:
             await self._pg_pool.close()
             self._pg_pool = None
         logger.info("Database connection closed.")
+
+    @property
+    def pg_pool(self) -> Optional[asyncpg.Pool]:
+        return self._pg_pool
 
     @asynccontextmanager
     async def get_connection(self) -> AsyncGenerator[aiosqlite.Connection, None]:

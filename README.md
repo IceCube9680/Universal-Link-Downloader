@@ -11,15 +11,21 @@ A production-ready, asynchronous, highly modular **Universal Link Downloader Tel
   * Blocks loopback (`127.0.0.0/8`), private subnets (RFC 1918), link-local (`169.254.0.0/16`), cloud metadata (`169.254.169.254`), and IPv6 private addresses.
   * Resolves and verifies DNS hostnames against rebinding attacks.
   * Path traversal protection and filename sanitization against `../`, null bytes, and reserved system characters.
-* **📦 Supported Services (Phase 1, 2, 3 & 4 - 26 Adapters):**
+* **📦 Supported Services (27 Adapters & 18+ TeraBox Mirrors):**
+  * 🎥 **YouTube & YouTube Music:** Direct high-speed download for videos, shorts, live streams, music tracks, albums, artist channels, and playlists with auto audio/video selection via `yt-dlp`.
+  * 📦 **TeraBox & 18+ Clone Domains:** Comprehensive support for `terabox.com`, `terabox.app`, `teraboxapp.com`, `1024tera.com`, `1024terabox.com`, `teraboxshare.com`, `teraboxlink.com`, `terasharefile.com`, `terafileshare.com`, `terasharelink.com`, `nephobox.com`, `freeterabox.com`, `4funbox.com`, `mirrobox.com`, `mirrorbox.com`, `momerybox.com`, `tibibox.com`, `diskwala.com`, `terabox.link`.
   * 🌐 **Generic HTTP/HTTPS:** Direct downloadable files with streaming chunks, range resumes, and MIME detection.
   * 📂 **MediaFire:** Scrapes CDN download URLs and metadata.
   * ⚡ **Pixeldrain:** Official high-speed API integration (`/api/file/<id>`).
-  * 🚀 **GoFile:** Automated guest token creation and direct folder/file stream resolution.
+  * 🚀 **GoFile (Production Modular Engine):**
+    * **Zero Hardcoded CDN Hostnames:** Dynamically queries GoFile API (`/contents/{id}`) and resolves current CDN locations across transient datacenter shifts (`srv-fileX`, `storeX`, etc.).
+    * **URL Detector & Content Parser:** Extracts content IDs from `/d/<id>`, `/download/web/<id>`, and `?c=<id>` formats.
+    * **Multi-File & Folder Support:** Hierarchical folder enumeration with child file resolution and aggregate sizing.
+    * **Resilient Caching & Re-Resolution:** In-memory TTL cache with auto-invalidation and fresh API re-resolution on expired CDN links (401/403/404/410).
+    * **Official API Client & Website Token:** Guest account auto-provisioning, WT token computation via Node.js VM, and optional `GOFILE_API_TOKEN` support with rate limit backoff.
   * 📦 **Dropbox:** Share link conversion to direct stream endpoints (`dl=1`).
   * 📁 **Google Drive:** File ID extraction & large-file virus-scan confirmation resolver.
   * ☁️ **OneDrive:** Microsoft Shares API (`/shares/u!<base64>/root/content`) resolution.
-  * 📦 **TeraBox:** Shorturl (`surl`) resolver with optional `TERABOX_COOKIE` support.
   * 🔒 **MEGA:** API resolution, attribute decryption, and streaming on-the-fly AES-CTR payload decryption.
   * 📁 **1fichier:** Web form resolution with direct CDN link extraction & optional `ONEFICHIER_API_KEY`.
   * 📨 **WeTransfer:** Shortlink unshortening & transfer API (`/api/v4/transfers/{id}/download`) pre-signed S3 resolver.
@@ -38,10 +44,16 @@ A production-ready, asynchronous, highly modular **Universal Link Downloader Tel
   * 🌈 **Google Cloud Storage (GCS):** Public & pre-signed GCS blob streams (`storage.googleapis.com`).
   * 🔷 **Azure Blob Storage:** Azure Blob Storage with SAS token support (`*.blob.core.windows.net`).
   * 🐰 **Bunny Storage / BunnyCDN:** High-speed edge storage streams (`*.b-cdn.net`, `*.bunnycdn.com`).
+* **📢 Log Channel & Backup Channel:**
+  * **Log Channel (`LOG_CHANNEL_ID`):** Real-time structured activity logs for queued downloads, completions, cancellations, failures, and administrative actions.
+  * **Backup Channel (`BACKUP_CHANNEL_ID`):** Automatically creates a permanent copy/dump of all downloaded files in a private channel with indexing hashtags.
+* **🔒 Private Mode & Force Subscription:**
+  * Restrict bot access via `PRIVATE_MODE=true` with instant whitelist authorization (`/auth`, `/unauth`, `/whitelist`).
+  * Require users to join an announcement channel via `FORCE_SUB_CHANNEL` before sending links.
 * **📈 Live Animated Progress Bars:** Dynamic progress updates with byte counters, real-time smoothed speed calculation, ETA, and throttled message editing to prevent Telegram flood limits.
 * **🛡️ Sliding Window Rate Limiting:** Configurable per-user request throttling with sliding time windows to prevent server abuse and spam.
 * **📊 Metrics & Telemetry:** Real-time monitoring of CPU, RAM, Disk, throughput counters, top services, and Prometheus metrics exposition format.
-* **👑 Interactive Admin Dashboard:** Full-featured inline dashboard to inspect recent jobs, view system telemetry, manage registered users (ban/unban), broadcast announcements, and clear cache.
+* **👑 Interactive Admin Dashboard:** Full-featured inline dashboard to inspect recent jobs, view system telemetry, manage registered users (ban/unban/whitelist), broadcast announcements, and clear cache.
 * **🔄 Redis Distributed Queue & Distributed Locks:** Optional Redis backend (`REDIS_URL`) for horizontal multi-worker clustering, distributed job queues, and locking.
 * **🍃 MongoDB + PostgreSQL + SQLite Multi-Engine Database Support:** Full native async MongoDB driver via `motor` with automatic index creation and aggregation pipelines, alongside PostgreSQL (`asyncpg`) and SQLite (`aiosqlite`).
 * **⚙️ Interactive Bot UI:** Inline keyboards for settings, format selection (Document vs Media/Video streaming), job cancellation, and real-time status tracking.
@@ -152,7 +164,13 @@ docker compose logs -f
 | `API_ID` | `0` | Telegram API ID from my.telegram.org |
 | `API_HASH` | `""` | Telegram API Hash from my.telegram.org |
 | `ADMIN_IDS` | `""` | Comma-separated admin Telegram IDs |
-| `DATABASE_URL` | `sqlite:///data/bot.db` | SQLite or PostgreSQL connection string |
+| `DATABASE_URL` | `sqlite:///data/bot.db` | SQLite (`sqlite:///data/bot.db`), PostgreSQL (`postgresql://...`), or MongoDB (`mongodb://...`) connection string |
+| `REDIS_URL` | `""` | Optional Redis URL for distributed priority queue, pub/sub, locks, and multi-worker clusters (e.g. `redis://localhost:6379/0`) |
+| `RATE_LIMIT_ENABLED` | `true` | Enable atomic sliding window rate limiting |
+| `RATE_LIMIT_REQUESTS` | `10` | Maximum requests allowed within rate limit window |
+| `RATE_LIMIT_WINDOW` | `60` | Rate limit window in seconds |
+| `METRICS_ENABLED` | `false` | Enable lightweight Prometheus metrics HTTP endpoint |
+| `METRICS_PORT` | `9090` | Prometheus metrics HTTP server port |
 | `DOWNLOAD_DIR` | `./downloads` | Directory for active downloads |
 | `TEMP_DIR` | `./temp` | Directory for temporary files |
 | `LOG_DIR` | `./logs` | Directory for log files |
@@ -177,10 +195,18 @@ docker compose logs -f
 - `/cancel [job_id]` - Cancel an ongoing download
 
 ### Admin Commands (Restricted to `ADMIN_IDS`)
-- `/stats` - View global statistics (users, completed/failed jobs, bandwidth)
+- `/admin` or `/stats` - Open interactive inline admin dashboard
+- `/metrics` - Real-time system telemetry with visual ASCII resource gauges
 - `/jobs` - List recent 15 jobs and statuses
 - `/users` - View user count and recent active users
-- `/broadcast <message>` - Broadcast an announcement to all users
+- `/user <telegram_id>` - Search user profile and download history
+- `/workers` - View active cluster worker nodes and heartbeat telemetry
+- `/auth <telegram_id>` - Whitelist/authorize a user in Private Mode
+- `/unauth <telegram_id>` - Remove user from authorized whitelist
+- `/whitelist` - View all authorized whitelisted users
+- `/ban <telegram_id>` - Ban user from using the bot
+- `/unban <telegram_id>` - Unban user
+- `/broadcast <message>` - Broadcast an announcement to all users with FloodWait safety
 - `/clearcache` - Purge orphaned temporary directories
 - `/restart` - Trigger safe graceful process restart
 

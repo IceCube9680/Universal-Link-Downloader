@@ -8,8 +8,16 @@ def is_admin_user(user_id: int) -> bool:
     return user_id in settings.ADMIN_IDS
 
 
-async def admin_filter_func(_, __, update: Union[Message, CallbackQuery]) -> bool:
-    user = update.from_user
+async def admin_filter_func(*args, **kwargs) -> bool:
+    update = None
+    for arg in args:
+        if isinstance(arg, (Message, CallbackQuery)) or hasattr(arg, "from_user"):
+            update = arg
+    if update is None:
+        update = kwargs.get("update")
+    if not update:
+        return False
+    user = getattr(update, "from_user", None)
     if not user:
         return False
     return is_admin_user(user.id)
