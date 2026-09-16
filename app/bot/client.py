@@ -13,6 +13,8 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.database.database import Database
 from app.download.filesystem import fs_manager
+from app.downloaders.terabox.credentials import terabox_credentials
+from app.queue.bulk_manager import bulk_manager
 from app.queue.manager import job_queue
 
 from app.core.metrics import metrics
@@ -40,6 +42,7 @@ class UniversalBot:
 
         self._register_handlers()
         job_queue.set_dependencies(self.db, self.app)
+        bulk_manager.set_dependencies(self.db, self.app)
 
     def _register_handlers(self) -> None:
         """Register all command, message, and callback handlers."""
@@ -56,6 +59,7 @@ class UniversalBot:
         fs_manager.purge_orphaned_directories()
 
         await self.db.connect()
+        await terabox_credentials.initialize(self.db)
 
         if settings.REDIS_URL:
             await redis_manager.connect()
@@ -66,13 +70,14 @@ class UniversalBot:
         job_queue.start_workers()
 
         if settings.BOT_TOKEN:
-            # Connect with automatic retry for session locks
+            # Connect with automatic retry for session locks and revoked/stale sessions
             for attempt in range(1, 4):
                 try:
                     await self.app.start()
                     break
                 except Exception as e:
-                    if "database is locked" in str(e).lower() and attempt < 3:
+                    err_msg = str(e).lower()
+                    if "database is locked" in err_msg and attempt < 3:
                         logger.warning("Session database locked on attempt %d. Clearing journal locks and retrying...", attempt)
                         for fname in os.listdir(settings.DATA_DIR):
                             if fname.endswith(("-journal", "-wal", "-shm")):
@@ -81,6 +86,26 @@ class UniversalBot:
                                 except Exception:
                                     pass
                         await asyncio.sleep(1.0)
+                    elif ("session_revoked" in err_msg or "auth_key" in err_msg) and attempt < 3:
+                        logger.warning("Session invalidated or revoked on attempt %d. Purging stale session and re-authenticating...", attempt)
+                        for fname in os.listdir(settings.DATA_DIR):
+                            if fname.startswith("universal_downloader_bot.session"):
+                                try:
+                                    os.remove(os.path.join(settings.DATA_DIR, fname))
+                                except Exception:
+                                    pass
+                        # Re-instantiate client with a clean slate
+                        self.app = Client(
+                            name="universal_downloader_bot",
+                            api_id=settings.API_ID if settings.API_ID else 6,
+                            api_hash=settings.API_HASH if settings.API_HASH else "eb06d4abfb49dc3eeb1aeb98ae0f581e",
+                            bot_token=settings.BOT_TOKEN,
+                            workdir=os.path.join(os.getcwd(), "data"),
+                            in_memory=not bool(settings.BOT_TOKEN)
+                        )
+                        self._register_handlers()
+                        job_queue.set_dependencies(self.db, self.app)
+                        await asyncio.sleep(0.5)
                     else:
                         raise
 

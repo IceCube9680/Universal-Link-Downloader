@@ -131,10 +131,12 @@ def get_task_process_card(
         ])
 
     elif stage_upper == "FAILED":
-        err_msg = (error or "Unknown error")[:120]
+        err_msg = str(error or "Unknown error").strip()
+        if len(err_msg) > 500:
+            err_msg = f"{err_msg[:497]}..."
         lines.extend([
             "❌ **Task Failed**",
-            f"⚠️ `{err_msg}`",
+            f"⚠️ {err_msg}",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "❌ Process interrupted."
         ])
@@ -202,4 +204,101 @@ def get_stats_card(stats: BotStats) -> str:
         f"⬇️ **Total Downloaded:** `{down_str}`\n"
         f"⬆️ **Total Uploaded:** `{up_str}`"
     )
+
+
+def get_bulk_process_card(
+    bulk_id: str,
+    stage: str,
+    total_links: int,
+    completed: int = 0,
+    downloading: int = 0,
+    uploading: int = 0,
+    queued: int = 0,
+    failed: int = 0,
+    unsupported: int = 0,
+    duplicates: int = 0,
+    total_downloaded_bytes: int = 0,
+    active_filename: Optional[str] = None,
+    elapsed_seconds: Optional[float] = None
+) -> str:
+    """
+    Generate live progress card for aggregated multi-link or container downloads.
+    """
+    pct = (completed / total_links * 100.0) if total_links > 0 else 0.0
+    bar = render_progress_bar(pct)
+    transferred_str = format_filesize(total_downloaded_bytes)
+
+    lines = [
+        f"📦 **Bulk Download `#{bulk_id}`**",
+        f"📊 **Progress:** `{bar}` **{completed}/{total_links}** ({pct:.1f}%)",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"⬇️ **Active:** `{downloading}` | ⬆️ **Uploading:** `{uploading}` | ⏳ **Queued:** `{queued}`",
+        f"✅ **Done:** `{completed}` | ❌ **Failed:** `{failed}` | ⚠️ **Unsupported:** `{unsupported}`",
+        f"📥 **Total Volume:** `{transferred_str}`"
+    ]
+
+    if active_filename:
+        short_fn = active_filename if len(active_filename) <= 45 else f"{active_filename[:42]}..."
+        lines.append(f"📄 **Current:** `{short_fn}`")
+
+    if elapsed_seconds is not None and elapsed_seconds > 0:
+        lines.append(f"⏱️ **Elapsed:** `{int(elapsed_seconds)}s`")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    if stage.upper() == "DISCOVERING":
+        lines.append("🔎 _Scanning page and extracting links..._")
+    elif stage.upper() == "RUNNING":
+        lines.append(f"🚀 _Processing downloads safely with controlled concurrency..._\n🛑 `/cancel {bulk_id}`")
+    elif stage.upper() == "CANCELLED":
+        lines.append("🛑 _Bulk download cancelled by user._")
+    elif stage.upper() == "COMPLETED":
+        lines.append("🎉 _All discovered items processed!_")
+
+    return "\n".join(lines)
+
+
+def get_bulk_summary_card(
+    bulk_id: str,
+    total_discovered: int,
+    processed: int,
+    successful: int,
+    failed: int,
+    unsupported: int,
+    duplicates: int,
+    total_bytes: int,
+    duration_seconds: float,
+    failed_details: Optional[list] = None
+) -> str:
+    """
+    Generate clean completion summary report for bulk download jobs.
+    """
+    vol_str = format_filesize(total_bytes)
+    dur_str = f"{int(duration_seconds)}s" if duration_seconds < 60 else f"{int(duration_seconds // 60)}m {int(duration_seconds % 60)}s"
+
+    lines = [
+        "✅ **Bulk Download Completed**",
+        f"🆔 **Job ID:** `#{bulk_id}`",
+        f"⏱️ **Duration:** `{dur_str}`",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"🔎 **Total Discovered:** `{total_discovered}`",
+        f"🚀 **Processed:** `{processed}`",
+        f"✅ **Successful Files:** `{successful}`",
+        f"❌ **Failed:** `{failed}`",
+        f"⚠️ **Unsupported Links:** `{unsupported}`",
+        f"🔁 **Duplicates Skipped:** `{duplicates}`",
+        f"📦 **Total Transferred:** `{vol_str}`",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    ]
+
+    if failed_details:
+        lines.append("⚠️ **Failures Summary:**")
+        for err_item in failed_details[:5]:
+            lines.append(f"• `{err_item}`")
+        if len(failed_details) > 5:
+            lines.append(f"• _...and {len(failed_details) - 5} more_")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    lines.append("✨ _All delivered files are available above in this chat._")
+    return "\n".join(lines)
 

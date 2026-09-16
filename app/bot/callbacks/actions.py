@@ -52,6 +52,15 @@ def register_callback_handlers(app: Client, db: Database) -> None:
                 else:
                     await callback_query.answer("❌ Job not found or already completed.", show_alert=True)
 
+            elif data.startswith("bulk_cancel:"):
+                bulk_id = data.split(":", 1)[1]
+                from app.queue.bulk_manager import bulk_manager
+                success = await bulk_manager.cancel_bulk_job(bulk_id, user_id=user.id)
+                if success:
+                    await callback_query.answer("🛑 Bulk download cancelled!", show_alert=True)
+                else:
+                    await callback_query.answer("❌ Bulk job not found or already completed.", show_alert=True)
+
             # 2. Toggle Upload Mode
             elif data.startswith("set_mode:"):
                 new_mode = data.split(":", 1)[1]

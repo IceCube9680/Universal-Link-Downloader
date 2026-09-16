@@ -13,7 +13,17 @@ A production-ready, asynchronous, highly modular **Universal Link Downloader Tel
   * Path traversal protection and filename sanitization against `../`, null bytes, and reserved system characters.
 * **📦 Supported Services (27 Adapters & 18+ TeraBox Mirrors):**
   * 🎥 **YouTube & YouTube Music:** Direct high-speed download for videos, shorts, live streams, music tracks, albums, artist channels, and playlists with auto audio/video selection via `yt-dlp`.
-  * 📦 **TeraBox & 18+ Clone Domains:** Comprehensive support for `terabox.com`, `terabox.app`, `teraboxapp.com`, `1024tera.com`, `1024terabox.com`, `teraboxshare.com`, `teraboxlink.com`, `terasharefile.com`, `terafileshare.com`, `terasharelink.com`, `nephobox.com`, `freeterabox.com`, `4funbox.com`, `mirrobox.com`, `mirrorbox.com`, `momerybox.com`, `tibibox.com`, `diskwala.com`, `terabox.link`.
+  * 📦 **TeraBox (Production Resilient Modular Engine):**
+    * **Cookie-Free Resolution First:** Operates fully without requiring `TERABOX_COOKIE`. Does not fail startup or normal downloads when cookies are absent.
+    * **18+ Supported Mirrors:** Strict URL normalization across `terabox.com`, `terabox.app`, `teraboxapp.com`, `1024tera.com`, `1024terabox.com`, `teraboxshare.com`, `teraboxlink.com`, `terasharefile.com`, `terafileshare.com`, `terasharelink.com`, `nephobox.com`, `freeterabox.com`, `4funbox.com`, `mirrobox.com`, `mirrorbox.com`, `momerybox.com`, `tibibox.com`, `diskwala.com`, `terabox.link`.
+    * **Direct URL Validation & SSRF Defense:** Validates all resolved direct download URLs against SSRF, loopback (`127.0.0.1`), private networks (RFC 1918), link-local, and cloud metadata.
+    * **Request Coalescing:** Simultaneous download requests for the same share link coalesce into a single resolution task, eliminating duplicate queries.
+    * **Automatic Expired URL Recovery:** Detects expired temporary direct download URLs during download and automatically re-resolves the original share link once.
+    * **Deterministic Session & Failure Detection:** Explicitly tracks expired session cookies (`errno: 2`, `errno: -6`, HTTP 401/403) and marks invalid sessions to prevent infinite loops. No fake cookie synthesis or CAPTCHA bypass is performed.
+    * **Dynamic Admin-Managed Cookie & Precedence:** Admins can dynamically update or clear the active session cookie via `/setteraboxcookie` and `/clearteraboxcookie` without restarting the process. Precedence is `Database Cookie -> Environment Fallback -> Cookie-free mode`.
+    * **Authenticated Encryption at Rest:** Cookies stored in the database are encrypted at rest using Fernet/AES authenticated cryptography.
+    * **Secret Redaction & Telegram Privacy:** Sensitive cookie values are automatically deleted from Telegram chats upon receipt, redacted from logs/diagnostics, and never echoed back in status or error messages.
+    * **Note on 3rd-Party Behavior:** TeraBox is a third-party platform; cookies may expire server-side and the engine handles expired sessions gracefully with clean diagnostic feedback.
   * 🌐 **Generic HTTP/HTTPS:** Direct downloadable files with streaming chunks, range resumes, and MIME detection.
   * 📂 **MediaFire:** Scrapes CDN download URLs and metadata.
   * ⚡ **Pixeldrain:** Official high-speed API integration (`/api/file/<id>`).
@@ -57,7 +67,7 @@ A production-ready, asynchronous, highly modular **Universal Link Downloader Tel
 * **🔄 Redis Distributed Queue & Distributed Locks:** Optional Redis backend (`REDIS_URL`) for horizontal multi-worker clustering, distributed job queues, and locking.
 * **🍃 MongoDB + PostgreSQL + SQLite Multi-Engine Database Support:** Full native async MongoDB driver via `motor` with automatic index creation and aggregation pipelines, alongside PostgreSQL (`asyncpg`) and SQLite (`aiosqlite`).
 * **⚙️ Interactive Bot UI:** Inline keyboards for settings, format selection (Document vs Media/Video streaming), job cancellation, and real-time status tracking.
-* **🗃️ Concurrency & Queue Manager:** Per-user job limits, daily download limits, in-flight URL deduplication, and graceful worker lifecycle management.
+* **🗃️ Concurrency & Queue Manager:** Per-user job limits, daily download limits, in-flight URL deduplication, graceful worker lifecycle management, and configurable global inter-file delay (`DOWNLOAD_FILE_DELAY=10` seconds, `0` to disable) enforced across all download sources (bulk, single, graph.org, TeraBox, direct HTTP).
 * **🐳 Docker Multi-Worker Cluster:** Complete `docker-compose.yml` with `universal-bot`, scalable `universal-worker` nodes, `redis`, and `postgres` services.
 
 ---
@@ -207,6 +217,9 @@ docker compose logs -f
 - `/ban <telegram_id>` - Ban user from using the bot
 - `/unban <telegram_id>` - Unban user
 - `/broadcast <message>` - Broadcast an announcement to all users with FloodWait safety
+- `/setteraboxcookie [cookie]` - Dynamically update the TeraBox session cookie at runtime (supports single command argument or interactive prompt). Incoming cookie messages are automatically deleted for privacy and stored encrypted at rest.
+- `/clearteraboxcookie` - Remove database-managed TeraBox cookie and invalidate runtime cache (falls back to environment/cookie-free mode).
+- `/teraboxcookiestatus` - Safely check TeraBox credential configuration status without revealing secret material.
 - `/clearcache` - Purge orphaned temporary directories
 - `/restart` - Trigger safe graceful process restart
 

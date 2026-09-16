@@ -120,6 +120,15 @@ def register_command_handlers(app: Client, db: Database) -> None:
         parts = message.text.split(maxsplit=1)
         if len(parts) > 1:
             target_job_id = parts[1].strip()
+            if target_job_id.upper().startswith("BULK-") or target_job_id.lower().startswith("bulk_"):
+                from app.queue.bulk_manager import bulk_manager
+                success = await bulk_manager.cancel_bulk_job(target_job_id, user_id=user.id)
+                if success:
+                    await message.reply_text(f"🛑 Successfully cancelled Bulk Job `#{target_job_id}`.")
+                else:
+                    await message.reply_text(f"❌ Bulk Job `#{target_job_id}` not found or not active.")
+                return
+
             success = job_queue.cancel_job(target_job_id, user_id=user.id)
             if success:
                 await message.reply_text(f"🛑 Successfully cancelled Job `#{target_job_id}`.")

@@ -32,6 +32,7 @@ from app.download.progress import ProgressTracker
 from app.downloaders.registry import registry
 from app.queue.jobs import JobContext
 from app.queue.redis_queue import redis_manager
+from app.queue.scheduler import download_scheduler
 from app.upload.progress import UploadProgressTracker
 from app.upload.telegram import telegram_uploader
 from app.utils.filesize import format_filesize
@@ -96,6 +97,7 @@ class JobQueue:
         self._workers.clear()
         self._active_jobs.clear()
         self._user_job_map.clear()
+        download_scheduler.reset()
         logger.info("JobQueue stopped.")
 
     async def submit_job(
@@ -309,6 +311,9 @@ class JobQueue:
             # Check distributed cancellation
             if redis_manager.is_connected and await redis_manager.is_job_cancelled(ctx.job_id):
                 raise CancelledError("Job cancelled before start")
+
+            # Acquire download scheduler gate (respects global inter-file delay)
+            await download_scheduler.acquire_slot(cancel_event=ctx.cancel_event)
 
             # 1. RESOLVING
             ctx.status = JobStatus.RESOLVING
@@ -616,6 +621,7 @@ class JobQueue:
             job_logger.error("Job %s failed with unexpected exception: %s", ctx.job_id, e, exc_info=True)
 
         finally:
+            download_scheduler.release_slot()
             if redis_manager.is_connected:
                 await redis_manager.release_url_lock(ctx.user_id, ctx.url)
             fs_manager.cleanup_job_dir(ctx.job_id)

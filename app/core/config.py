@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     # Concurrency and Limits
     MAX_CONCURRENT_DOWNLOADS: int = Field(default=2, description="Max concurrent downloads globally")
     MAX_CONCURRENT_UPLOADS: int = Field(default=2, description="Max concurrent uploads globally")
+    DOWNLOAD_FILE_DELAY: float = Field(default=10.0, description="Delay in seconds between consecutive file download jobs (0=disabled)")
     MAX_DOWNLOAD_SIZE: Union[str, int] = Field(default="4GB", description="Maximum allowed file download size")
     DOWNLOAD_TIMEOUT: int = Field(default=3600, description="Timeout in seconds for single download")
     MAX_RETRIES: int = Field(default=3, description="Maximum retry attempts on transient network errors")
@@ -44,13 +45,24 @@ class Settings(BaseSettings):
 
     # UI & Intervals
     PROGRESS_UPDATE_INTERVAL: float = Field(default=3.0, description="Seconds between Telegram progress edits")
+    MIN_STATUS_UPDATE_INTERVAL: float = Field(default=3.0, description="Minimum seconds between status message edits")
     AUTO_PROCESS: bool = Field(default=True, description="Automatically start downloading on valid URL")
+
+    # Bulk URL Discovery & Recursive Scraping
+    BULK_DISCOVERY_ENABLED: bool = Field(default=True, description="Enable automatic webpage link discovery and bulk download")
+    MAX_URLS_PER_MESSAGE: int = Field(default=50, description="Maximum URLs to parse from a single user message")
+    MAX_DISCOVERED_URLS_PER_JOB: int = Field(default=100, description="Maximum total URLs to discover per bulk job")
+    MAX_DISCOVERY_DEPTH: int = Field(default=2, description="Maximum recursion depth for webpage link discovery (0=root, 1=links, 2=sublinks)")
+    MAX_DISCOVERY_CONCURRENCY: int = Field(default=3, description="Maximum concurrent webpage fetching tasks")
+    MAX_PAGE_SIZE_MB: int = Field(default=10, description="Maximum webpage HTML response size in MB to download and parse")
+    MAX_TEMP_STORAGE_PER_JOB: Union[str, int] = Field(default="10GB", description="Maximum temporary disk storage allowed per bulk job")
 
     # Security & Logging
     SSRF_PROTECTION_ENABLED: bool = Field(default=True, description="Enforce SSRF IP blocking on downloads")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level (DEBUG, INFO, WARNING, ERROR)")
     ADMIN_IDS: Union[str, List[int]] = Field(default=[], description="Comma-separated Telegram user IDs of admins")
     CHUNK_SIZE: int = Field(default=1024 * 1024, description="Streaming chunk size in bytes (1MB)")
+    ENCRYPTION_KEY: Optional[str] = Field(default="", description="Secret key for encrypting credentials at rest")
 
     # Redis and Distributed Workers
     REDIS_URL: Optional[str] = Field(default="", description="Optional Redis URL for distributed queues (e.g. redis://localhost:6379/0)")
@@ -60,8 +72,15 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS: int = Field(default=10, description="Max requests allowed in rate limit window")
     RATE_LIMIT_WINDOW: int = Field(default=60, description="Rate limit window in seconds")
 
-    # Optional Service Credentials
-    TERABOX_COOKIE: Optional[str] = Field(default="", description="Optional TeraBox ndus cookie for premium/fast downloads")
+    # TeraBox Settings
+    TERABOX_ENABLED: bool = Field(default=True, description="Enable or disable TeraBox downloader plugin")
+    TERABOX_COOKIE: Optional[str] = Field(default="", description="Optional TeraBox ndus cookie for authenticated fallback")
+    TERABOX_TIMEOUT: int = Field(default=10, description="TeraBox resolver HTTP request timeout in seconds")
+    TERABOX_MAX_RETRIES: int = Field(default=2, description="TeraBox transient failure max retries")
+    TERABOX_RETRY_BACKOFF: float = Field(default=1.5, description="Exponential backoff factor for TeraBox retries")
+    TERABOX_CACHE_TTL: int = Field(default=900, description="TeraBox link cache TTL in seconds")
+
+    # Other Optional Service Credentials
     GOFILE_TOKEN: Optional[str] = Field(default="", description="Optional GoFile account token for higher rate limits")
     GOFILE_API_TOKEN: Optional[str] = Field(default=None, description="Optional GoFile API token")
     GOFILE_API_TIMEOUT: int = Field(default=30, description="GoFile API request timeout in seconds")
@@ -84,6 +103,19 @@ class Settings(BaseSettings):
         """Parse MAX_DOWNLOAD_SIZE into integer bytes."""
         size = parse_filesize(self.MAX_DOWNLOAD_SIZE)
         return size if size is not None else 4 * 1024 * 1024 * 1024
+
+    @field_validator("DOWNLOAD_FILE_DELAY", mode="before")
+    @classmethod
+    def parse_download_file_delay(cls, v):
+        if v is None or v == "":
+            return 10.0
+        try:
+            val = float(v)
+            if val < 0:
+                return 0.0
+            return val
+        except (ValueError, TypeError):
+            return 10.0
 
     @field_validator("ADMIN_IDS", mode="before")
     @classmethod

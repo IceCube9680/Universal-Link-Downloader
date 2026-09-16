@@ -135,3 +135,30 @@ class BotStats:
     total_uploaded_bytes: int = 0
     active_jobs: int = 0
     queued_jobs: int = 0
+
+
+@dataclass
+class BotSetting:
+    key: str = ""
+    value: str = ""
+    updated_at: str = field(default_factory=utcnow_str)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_row(cls, row: Any) -> Optional["BotSetting"]:
+        if row is None:
+            return None
+        if hasattr(row, "keys") or isinstance(row, dict):
+            r = dict(row)
+            return cls(
+                key=str(r.get("key", "")),
+                value=str(r.get("value", "")),
+                updated_at=str(r.get("updated_at", ""))
+            )
+        return cls(
+            key=str(row[0]) if len(row) > 0 else "",
+            value=str(row[1]) if len(row) > 1 else "",
+            updated_at=str(row[2]) if len(row) > 2 else ""
+        )

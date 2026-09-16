@@ -1,6 +1,8 @@
 import asyncio
 import os
 import sys
+import time
+from typing import Dict
 from pyrogram import Client, filters
 from pyrogram.errors import MessageNotModified
 from pyrogram.types import CallbackQuery, Message
@@ -14,11 +16,29 @@ from app.core.metrics import metrics
 from app.database.database import Database
 from app.database.repository import JobRepository, StatsRepository, UserRepository
 from app.download.filesystem import fs_manager
+from app.downloaders.terabox.credentials import terabox_credentials
 from app.queue.manager import job_queue
 from app.queue.redis_queue import redis_manager
 from app.utils.filesize import format_filesize
 
 logger = get_logger("admin_handlers")
+
+_pending_cookie_admins: Dict[int, float] = {}
+
+
+def is_pending_cookie_admin(user_id: int) -> bool:
+    """Check if admin is actively waiting to send a TeraBox cookie."""
+    if user_id not in _pending_cookie_admins:
+        return False
+    ts = _pending_cookie_admins.get(user_id, 0)
+    if time.time() - ts > 120:
+        _pending_cookie_admins.pop(user_id, None)
+        return False
+    return True
+
+
+def clear_pending_cookie_admin(user_id: int) -> None:
+    _pending_cookie_admins.pop(user_id, None)
 
 
 def register_admin_handlers(app: Client, db: Database) -> None:
@@ -340,6 +360,118 @@ def register_admin_handlers(app: Client, db: Database) -> None:
         await message.reply_text("🔄 Restarting bot process...")
         logger.info("Admin triggered restart. Exiting process with code 0...")
         sys.exit(0)
+
+    # --- TeraBox Cookie Management Handlers ---
+
+    @app.on_message(filters.command(["setteraboxcookie", "setcookie"]) & admin_filter)
+    async def admin_set_terabox_cookie_handler(client: Client, message: Message):
+        user = message.from_user
+        if not user:
+            return
+
+        parts = message.text.split(maxsplit=1) if message.text else []
+        if len(parts) > 1 and parts[1].strip():
+            raw_cookie = parts[1].strip()
+            # Attempt to delete incoming message containing credential
+            try:
+                await message.delete()
+            except Exception:
+                pass
+
+            success, err_msg = await terabox_credentials.set_cookie(raw_cookie)
+            if not success:
+                await message.reply_text(f"❌ {err_msg}")
+                return
+
+            # Perform non-destructive session health check
+            verified = await terabox_credentials.verify_session()
+            if verified is True:
+                await message.reply_text("✅ TeraBox cookie updated and verified.")
+            elif verified is False:
+                await message.reply_text("⚠️ TeraBox cookie was stored, but TeraBox did not accept the session.")
+            else:
+                await message.reply_text("✅ TeraBox cookie updated successfully.")
+            return
+
+        # Interactive conversation workflow
+        _pending_cookie_admins[user.id] = time.time()
+        await message.reply_text("Send the new TeraBox cookie.")
+
+    @app.on_message(filters.command("clearteraboxcookie") & admin_filter)
+    async def admin_clear_terabox_cookie_handler(client: Client, message: Message):
+        await terabox_credentials.clear_cookie()
+        if message.from_user:
+            clear_pending_cookie_admin(message.from_user.id)
+        await message.reply_text("🗑️ TeraBox database cookie cleared.")
+
+    @app.on_message(filters.command("teraboxcookiestatus") & admin_filter)
+    async def admin_terabox_cookie_status_handler(client: Client, message: Message):
+        db_status = "configured" if terabox_credentials.is_database_configured else "not configured"
+        env_status = "configured" if terabox_credentials.is_env_configured else "not configured"
+        source = terabox_credentials.get_cookie_source()
+        if source == "database":
+            runtime_status = "loaded (database)"
+        elif source == "environment":
+            runtime_status = "loaded (environment fallback)"
+        else:
+            runtime_status = "cookie-free mode"
+
+        text = (
+            "🍪 **TeraBox Cookie Status:**\n\n"
+            f"• **Database:** `{db_status}`\n"
+            f"• **Environment fallback:** `{env_status}`\n"
+            f"• **Runtime:** `{runtime_status}`"
+        )
+        await message.reply_text(text)
+
+    @app.on_message(filters.command(["setteraboxcookie", "setcookie", "clearteraboxcookie", "teraboxcookiestatus"]) & ~admin_filter)
+    async def admin_unauthorized_terabox_cookie_handler(client: Client, message: Message):
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await message.reply_text("⛔ You are not authorized to perform this action.")
+
+    # Pending cookie conversation message filter & handler
+    pending_cookie_filter = filters.create(
+        lambda _, __, m: bool(
+            m.from_user
+            and is_admin_user(m.from_user.id)
+            and is_pending_cookie_admin(m.from_user.id)
+            and bool(m.text and not m.text.startswith("/"))
+        )
+    )
+
+    @app.on_message(pending_cookie_filter & filters.private)
+    async def admin_pending_cookie_response_handler(client: Client, message: Message):
+        user = message.from_user
+        if not user:
+            return
+        clear_pending_cookie_admin(user.id)
+        raw_cookie = message.text.strip() if message.text else ""
+
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        success, err_msg = await terabox_credentials.set_cookie(raw_cookie)
+        if not success:
+            await message.reply_text(f"❌ {err_msg}")
+            return
+
+        verified = await terabox_credentials.verify_session()
+        if verified is True:
+            await message.reply_text("✅ TeraBox cookie updated and verified.")
+        elif verified is False:
+            await message.reply_text("⚠️ TeraBox cookie was stored, but TeraBox did not accept the session.")
+        else:
+            await message.reply_text("✅ TeraBox cookie updated successfully.")
+
+        try:
+            message.stop_propagation()
+        except Exception:
+            pass
 
     # Callback Query Router for Admin Dashboard Tabs
     @app.on_callback_query(filters.regex(r"^admin_tab:"))

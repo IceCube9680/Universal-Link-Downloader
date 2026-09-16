@@ -1,7 +1,7 @@
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from app.database.database import Database
-from app.database.models import BotStats, DownloadJob, User, utcnow_str
+from app.database.models import BotSetting, BotStats, DownloadJob, User, utcnow_str
 from app.core.logging import get_logger
 
 logger = get_logger("repository")
@@ -770,3 +770,101 @@ class StatsRepository:
                 total_downloaded_bytes=r2[5] if r2 and r2[5] else 0,
                 total_uploaded_bytes=r2[6] if r2 and r2[6] else 0
             )
+
+
+class SettingsRepository:
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def get_setting(self, key: str) -> Optional[str]:
+        """Retrieve setting value by key."""
+        # 1. MongoDB
+        if self.db.is_mongodb and self.db.mongo_db is not None:
+            doc = await self.db.mongo_db.bot_settings.find_one({"key": key})
+            return doc.get("value") if doc else None
+
+        # 2. PostgreSQL
+        if self.db.is_postgres and self.db.pg_pool is not None:
+            async with self.db.pg_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT value FROM bot_settings WHERE key = $1",
+                    key
+                )
+                return row["value"] if row else None
+
+        # 3. SQLite
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT value FROM bot_settings WHERE key = ?",
+                (key,)
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+    async def set_setting(self, key: str, value: str) -> bool:
+        """Set or update setting atomically."""
+        now = utcnow_str()
+
+        # 1. MongoDB
+        if self.db.is_mongodb and self.db.mongo_db is not None:
+            res = await self.db.mongo_db.bot_settings.update_one(
+                {"key": key},
+                {"$set": {"key": key, "value": value, "updated_at": now}},
+                upsert=True
+            )
+            return bool(res.acknowledged)
+
+        # 2. PostgreSQL
+        if self.db.is_postgres and self.db.pg_pool is not None:
+            async with self.db.pg_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO bot_settings (key, value, updated_at)
+                    VALUES ($1, $2, NOW())
+                    ON CONFLICT (key) DO UPDATE SET
+                        value = EXCLUDED.value,
+                        updated_at = NOW();
+                    """,
+                    key, value
+                )
+                return True
+
+        # 3. SQLite
+        async with self.db.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO bot_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (key, value, now)
+            )
+            await conn.commit()
+            return True
+
+    async def delete_setting(self, key: str) -> bool:
+        """Delete setting by key."""
+        # 1. MongoDB
+        if self.db.is_mongodb and self.db.mongo_db is not None:
+            res = await self.db.mongo_db.bot_settings.delete_one({"key": key})
+            return res.deleted_count > 0
+
+        # 2. PostgreSQL
+        if self.db.is_postgres and self.db.pg_pool is not None:
+            async with self.db.pg_pool.acquire() as conn:
+                res = await conn.execute(
+                    "DELETE FROM bot_settings WHERE key = $1",
+                    key
+                )
+                return res.endswith(" 1") or res == "DELETE 1"
+
+        # 3. SQLite
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM bot_settings WHERE key = ?",
+                (key,)
+            )
+            await conn.commit()
+            return cursor.rowcount > 0

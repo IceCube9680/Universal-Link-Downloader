@@ -11,14 +11,14 @@ class DownloaderError(Exception):
 
 class InvalidURLError(DownloaderError):
     """Raised when the provided URL is malformed or invalid."""
-    def __init__(self, message: str = "Invalid URL provided.", user_message: str = "❌ Invalid URL. Please provide a valid HTTP or HTTPS link."):
-        super().__init__(message, user_message)
+    def __init__(self, message: str = "Invalid URL provided.", user_message: Optional[str] = None):
+        super().__init__(message, user_message or "❌ Invalid URL. Please provide a valid HTTP or HTTPS link.")
 
 
 class SSRFError(DownloaderError):
     """Raised when a URL targets a restricted/private network address."""
-    def __init__(self, message: str = "SSRF validation failed.", user_message: str = "❌ Access to private or internal network addresses is blocked."):
-        super().__init__(message, user_message)
+    def __init__(self, message: str = "SSRF validation failed.", user_message: Optional[str] = None):
+        super().__init__(message, user_message or "❌ Access to private or internal network addresses is blocked.")
 
 
 class FileSizeLimitError(DownloaderError):
@@ -34,29 +34,29 @@ class FileSizeLimitError(DownloaderError):
 
 class DownloaderResolutionError(DownloaderError):
     """Raised when direct download URL cannot be resolved."""
-    def __init__(self, message: str = "Failed to resolve download URL.", user_message: str = "❌ Could not resolve a direct download link for this URL."):
-        super().__init__(message, user_message)
+    def __init__(self, message: str = "Could not resolve a direct download link for this URL.", user_message: Optional[str] = None):
+        super().__init__(message, user_message or message)
 
 
 class DownloadHTTPError(DownloaderError):
     """Raised when an HTTP error occurs during download."""
-    def __init__(self, status_code: int, message: str):
+    def __init__(self, status_code: int, message: str, user_message: Optional[str] = None):
         msg = f"HTTP Error {status_code}: {message}"
-        user_msg = f"❌ Download failed (HTTP {status_code}). The remote server rejected the request."
+        user_msg = user_message or f"❌ Download failed (HTTP {status_code}). The remote server rejected the request."
         super().__init__(msg, user_msg)
         self.status_code = status_code
 
 
 class CancelledError(DownloaderError):
     """Raised when a download or upload job is cancelled by user or system."""
-    def __init__(self, message: str = "Operation cancelled.", user_message: str = "🛑 Job cancelled."):
-        super().__init__(message, user_message)
+    def __init__(self, message: str = "Operation cancelled.", user_message: Optional[str] = None):
+        super().__init__(message, user_message or "🛑 Job cancelled.")
 
 
 class TelegramUploadError(DownloaderError):
     """Raised when uploading file to Telegram fails."""
-    def __init__(self, message: str = "Telegram upload failed.", user_message: str = "❌ Failed to upload file to Telegram."):
-        super().__init__(message, user_message)
+    def __init__(self, message: str = "Telegram upload failed.", user_message: Optional[str] = None):
+        super().__init__(message, user_message or "❌ Failed to upload file to Telegram.")
 
 
 class JobNotFoundError(DownloaderError):

@@ -15,6 +15,14 @@ SECRET_PATTERNS = [
     re.compile(r'(?i)(secret\s*=\s*)[^\s&]+'),                 # secret=...
     re.compile(r'(?i)(authorization:\s*)[^\r\n]+'),            # Authorization header
     re.compile(r'(?i)(cookie:\s*)[^\r\n]+'),                   # Cookie header
+    re.compile(r'(?i)(set-cookie:\s*)[^\r\n]+'),               # Set-Cookie header
+    re.compile(r'(?i)(ndus=)[^\s;]+'),                         # TeraBox ndus cookie
+    re.compile(r'(?i)(TSID=)[^\s;]+'),                         # TeraBox TSID cookie
+    re.compile(r'(?i)(browserid=)[^\s;]+'),                    # TeraBox browserid cookie
+    re.compile(r'(?i)(csrfToken=)[^\s;]+'),                    # TeraBox csrfToken
+    re.compile(r'(?i)(terabox_cookie\s*[:=]\s*)[^\s&]+'),      # terabox_cookie=...
+    re.compile(r'(?i)(terabox_cookie[\'"]?\s*[:=]\s*[\'"]?)[^\'"\r\n]+'), # terabox_cookie: '...'
+    re.compile(r'(?i)(TERABOX_COOKIE\s*=\s*)[^\s&]+'),         # TERABOX_COOKIE=...
 ]
 
 

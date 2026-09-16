@@ -243,14 +243,37 @@ class RedisQueueManager:
 
     async def release_job_lease(self, job_id: str) -> None:
         """
-        Release job lease after completion.
+        Release distributed job lease.
         """
         if not self.is_connected:
             return
         try:
-            await self.client.delete(f"job_lease:{job_id}")
+            key = f"job_lease:{job_id}"
+            await self.client.delete(key)
         except Exception as e:
-            logger.debug("Error releasing job lease: %s", e)
+            logger.warning("Error releasing job lease: %s", e)
+
+    # --- Distributed Download Delay Coordination ---
+    async def set_last_job_finished_time(self, timestamp: float) -> None:
+        """Record epoch timestamp of last completed job across cluster."""
+        if not self.is_connected:
+            return
+        try:
+            await self.client.set("global:last_job_finished_time", str(timestamp), ex=86400)
+        except Exception as e:
+            logger.debug("Error setting last job finished time in Redis: %s", e)
+
+    async def get_last_job_finished_time(self) -> Optional[float]:
+        """Retrieve epoch timestamp of last completed job across cluster."""
+        if not self.is_connected:
+            return None
+        try:
+            val = await self.client.get("global:last_job_finished_time")
+            if val:
+                return float(val)
+        except Exception as e:
+            logger.debug("Error getting last job finished time from Redis: %s", e)
+        return None
 
 
 redis_manager = RedisQueueManager()

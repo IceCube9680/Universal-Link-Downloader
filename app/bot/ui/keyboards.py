@@ -51,6 +51,15 @@ def get_cancel_keyboard(job_id: str) -> InlineKeyboardMarkup:
     ])
 
 
+def get_bulk_cancel_keyboard(bulk_id: str) -> InlineKeyboardMarkup:
+    """Cancel button for bulk download tasks."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🛑 Cancel Bulk Download", callback_data=f"bulk_cancel:{bulk_id}")
+        ]
+    ])
+
+
 def get_admin_dashboard_keyboard() -> InlineKeyboardMarkup:
     """Interactive Admin Dashboard navigation keyboard with multi-tab support."""
     return InlineKeyboardMarkup([

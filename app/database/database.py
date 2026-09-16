@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS download_jobs (
     completed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS bot_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON download_jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON download_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON download_jobs(created_at);
@@ -79,6 +85,12 @@ CREATE TABLE IF NOT EXISTS download_jobs (
     created_at TIMESTAMPTZ NOT NULL,
     started_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS bot_settings (
+    key VARCHAR(128) PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON download_jobs(user_id);
@@ -127,6 +139,7 @@ class Database:
             await self.mongo_db.download_jobs.create_index("user_id")
             await self.mongo_db.download_jobs.create_index("status")
             await self.mongo_db.download_jobs.create_index("created_at")
+            await self.mongo_db.bot_settings.create_index("key", unique=True)
             logger.info("MongoDB indexes verified.")
 
         elif self.is_postgres:

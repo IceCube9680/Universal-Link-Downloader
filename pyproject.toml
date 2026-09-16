@@ -27,6 +27,7 @@ dependencies = [
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-ra -q --asyncio-mode=auto"
+pythonpath = ["."]
 testpaths = [
     "tests",
 ]
