@@ -484,7 +484,6 @@ class JobQueue:
                 f"👤 **User:** `{ctx.user_id}`\n"
                 f"🌐 **Source:** {ctx.service_name}\n"
                 f"🆔 **Job:** `#{ctx.job_id}`\n\n"
-                f"#backup #job_{ctx.job_id} #user_{ctx.user_id} #{svc_tag}"
             )
 
             if not self._client:

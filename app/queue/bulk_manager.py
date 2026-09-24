@@ -52,6 +52,10 @@ class BulkItem:
     filename: str = ""
     filesize: int = 0
     downloaded_bytes: int = 0
+    uploaded_bytes: int = 0
+    progress_pct: float = 0.0
+    speed: float = 0.0
+    eta: Optional[float] = None
     error: Optional[str] = None
 
 
@@ -185,7 +189,7 @@ class BulkJobManager:
         )
 
         # 2. Worker pipeline with concurrency control
-        async def update_live_ui(active_fn: Optional[str] = None, force: bool = False):
+        async def update_live_ui(active_item: Optional[BulkItem] = None, force: bool = False):
             if ctx.cancel_event.is_set():
                 return
             completed_cnt = sum(1 for i in ctx.items if i.state == BulkItemState.COMPLETED)
@@ -197,6 +201,40 @@ class BulkJobManager:
             duplicates_cnt = discovery_result.duplicates_count
 
             elapsed = time.time() - (ctx.started_at or ctx.created_at)
+
+            # Determine active item if not explicitly supplied
+            target_active = active_item
+            if not target_active:
+                for item in ctx.items:
+                    if item.state in (BulkItemState.UPLOADING, BulkItemState.DOWNLOADING):
+                        target_active = item
+                        break
+
+            active_fn = None
+            active_st = None
+            active_pct = None
+            active_transferred = None
+            active_tot = None
+            active_spd = None
+            active_eta_val = None
+            active_idx = None
+
+            if target_active:
+                active_fn = target_active.filename or target_active.service_name
+                active_st = target_active.state.value if hasattr(target_active.state, 'value') else str(target_active.state)
+                active_pct = target_active.progress_pct
+                if target_active.state == BulkItemState.UPLOADING:
+                    active_transferred = target_active.uploaded_bytes
+                else:
+                    active_transferred = target_active.downloaded_bytes
+                active_tot = target_active.filesize if target_active.filesize > 0 else None
+                active_spd = target_active.speed
+                active_eta_val = target_active.eta
+                try:
+                    active_idx = ctx.items.index(target_active) + 1
+                except ValueError:
+                    active_idx = None
+
             card = get_bulk_process_card(
                 bulk_id=bulk_id,
                 stage="RUNNING",
@@ -210,7 +248,14 @@ class BulkJobManager:
                 duplicates=duplicates_cnt,
                 total_downloaded_bytes=ctx.total_downloaded_bytes,
                 active_filename=active_fn,
-                elapsed_seconds=elapsed
+                elapsed_seconds=elapsed,
+                active_state=active_st,
+                active_progress_pct=active_pct,
+                active_transferred_bytes=active_transferred,
+                active_total_bytes=active_tot,
+                active_speed=active_spd,
+                active_eta=active_eta_val,
+                active_item_index=active_idx
             )
             await ctx.updater.edit_message(
                 client=client,
@@ -240,7 +285,8 @@ class BulkJobManager:
                         return
 
                     item.state = BulkItemState.DOWNLOADING
-                    await update_live_ui(active_fn=item.filename or item.service_name)
+                    item.progress_pct = 0.0
+                    await update_live_ui(active_item=item)
 
                     async def dl_progress(tracker: ProgressTracker):
                         item.downloaded_bytes = tracker.downloaded_bytes
@@ -248,7 +294,10 @@ class BulkJobManager:
                             item.filename = tracker.filename
                         if tracker.total_bytes:
                             item.filesize = tracker.total_bytes
-                        await update_live_ui(active_fn=item.filename)
+                        item.progress_pct = tracker.percentage
+                        item.speed = tracker.speed
+                        item.eta = tracker.eta
+                        await update_live_ui(active_item=item)
 
                     dl_result = await download_manager.start_download(
                         job_id=item.item_id,
@@ -259,6 +308,8 @@ class BulkJobManager:
                     )
                     item.filename = dl_result.filename
                     item.filesize = dl_result.filesize
+                    item.downloaded_bytes = dl_result.filesize
+                    item.progress_pct = 100.0
 
                 # B. UPLOADING with upload semaphore
                 async with self._upload_semaphore:
@@ -274,7 +325,11 @@ class BulkJobManager:
                         )
 
                     item.state = BulkItemState.UPLOADING
-                    await update_live_ui(active_fn=item.filename)
+                    item.progress_pct = 0.0
+                    item.uploaded_bytes = 0
+                    item.speed = 0.0
+                    item.eta = None
+                    await update_live_ui(active_item=item)
 
                     svc_tag = re.sub(r'[^a-zA-Z0-9_]', '', str(item.service_name).lower().replace(' ', '_'))
                     caption = (
@@ -283,11 +338,16 @@ class BulkJobManager:
                         f"👤 **User:** `{user_id}`\n"
                         f"🌐 **Source:** {item.service_name}\n"
                         f"🆔 **Bulk Job:** `#{bulk_id}`\n\n"
-                        f"#backup #bulk_{bulk_id} #user_{user_id} #{svc_tag}"
                     )
 
                     async def up_progress(tracker: UploadProgressTracker):
-                        await update_live_ui(active_fn=item.filename)
+                        item.uploaded_bytes = tracker.uploaded_bytes
+                        if tracker.total_bytes:
+                            item.filesize = tracker.total_bytes
+                        item.progress_pct = tracker.percentage
+                        item.speed = tracker.speed
+                        item.eta = tracker.eta
+                        await update_live_ui(active_item=item)
 
                     sent_msg = await telegram_uploader.upload_file(
                         client=client,
@@ -301,6 +361,7 @@ class BulkJobManager:
                     )
 
                 item.state = BulkItemState.COMPLETED
+                item.progress_pct = 100.0
                 ctx.total_downloaded_bytes += item.filesize
                 metrics.record_job_complete(item.filesize, item.filesize)
                 logger.info("Bulk item %s (%s) completed successfully", item.item_id, item.filename)

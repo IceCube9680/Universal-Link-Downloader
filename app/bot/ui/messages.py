@@ -220,27 +220,69 @@ def get_bulk_process_card(
     duplicates: int = 0,
     total_downloaded_bytes: int = 0,
     active_filename: Optional[str] = None,
-    elapsed_seconds: Optional[float] = None
+    elapsed_seconds: Optional[float] = None,
+    active_state: Optional[str] = None,
+    active_progress_pct: Optional[float] = None,
+    active_transferred_bytes: Optional[int] = None,
+    active_total_bytes: Optional[int] = None,
+    active_speed: Optional[float] = None,
+    active_eta: Optional[float] = None,
+    active_item_index: Optional[int] = None
 ) -> str:
     """
-    Generate live progress card for aggregated multi-link or container downloads.
+    Generate live progress card for aggregated multi-link or container downloads,
+    displaying both overall bulk progress bar and active item file processing bar.
     """
     pct = (completed / total_links * 100.0) if total_links > 0 else 0.0
-    bar = render_progress_bar(pct)
+    bulk_bar = render_progress_bar(pct)
     transferred_str = format_filesize(total_downloaded_bytes)
 
     lines = [
         f"📦 **Bulk Download `#{bulk_id}`**",
-        f"📊 **Progress:** `{bar}` **{completed}/{total_links}** ({pct:.1f}%)",
+        f"📊 **Bulk Progress:** `{bulk_bar}` **{completed}/{total_links}** ({pct:.1f}%)",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"⬇️ **Active:** `{downloading}` | ⬆️ **Uploading:** `{uploading}` | ⏳ **Queued:** `{queued}`",
         f"✅ **Done:** `{completed}` | ❌ **Failed:** `{failed}` | ⚠️ **Unsupported:** `{unsupported}`",
         f"📥 **Total Volume:** `{transferred_str}`"
     ]
 
-    if active_filename:
-        short_fn = active_filename if len(active_filename) <= 45 else f"{active_filename[:42]}..."
-        lines.append(f"📄 **Current:** `{short_fn}`")
+    # Individual active file processing bar section
+    if active_filename or active_state:
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        idx_prefix = f"({active_item_index}/{total_links}) " if active_item_index else ""
+        if active_filename:
+            short_fn = active_filename if len(active_filename) <= 45 else f"{active_filename[:42]}..."
+            lines.append(f"📄 **Current File:** `{idx_prefix}{short_fn}`")
+        elif active_item_index:
+            lines.append(f"📄 **Current File:** `Item {active_item_index}/{total_links}`")
+
+        state_badge = "⚡ **File Progress:**"
+        if active_state:
+            st_up = str(active_state).upper()
+            if "DOWNLOADING" in st_up:
+                state_badge = "⬇️ **Downloading:**"
+            elif "UPLOADING" in st_up:
+                state_badge = "⬆️ **Uploading:**"
+
+        file_pct = active_progress_pct if active_progress_pct is not None else 0.0
+        file_bar = render_progress_bar(file_pct)
+        lines.append(f"{state_badge} `{file_bar}`")
+
+        # Telemetry: size, speed, ETA
+        info_parts = []
+        if active_transferred_bytes is not None or active_total_bytes is not None:
+            cur_b = format_filesize(active_transferred_bytes or 0)
+            tot_b = format_filesize(active_total_bytes, default="Calculating...") if active_total_bytes else "Calculating..."
+            info_parts.append(f"📦 `{cur_b} / {tot_b}`")
+
+        if active_speed is not None and active_speed > 0:
+            info_parts.append(f"⚡ `{format_speed(active_speed)}`")
+
+        if active_eta is not None and active_eta > 0:
+            info_parts.append(f"⏱️ `{format_eta(active_eta)}`")
+
+        if info_parts:
+            lines.append(" | ".join(info_parts))
 
     if elapsed_seconds is not None and elapsed_seconds > 0:
         lines.append(f"⏱️ **Elapsed:** `{int(elapsed_seconds)}s`")

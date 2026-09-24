@@ -8,6 +8,7 @@ htmlcov/
 
 # Virtual Environment
 .venv/
+.venv
 env/
 venv/
 ENV/
@@ -16,6 +17,15 @@ ENV/
 .env
 *.session
 *.session-journal
+
+# Internal docs & service scripts
+.ai/
+.ai
+start.sh
+universal.service
+
+# Tests
+tests/
 
 # Runtime data & temp downloads
 data/
