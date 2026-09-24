@@ -92,5 +92,40 @@ class MediaInspector:
 
         return None
 
+    async def convert_gif_to_mp4(self, gif_path: str, output_mp4_path: str) -> Optional[str]:
+        """
+        Convert a GIF file to MP4 format using ffmpeg.
+        Uses yuv420p pixel format, faststart, and even dimensions for universal Telegram compatibility.
+        """
+        if not self.has_ffmpeg or not os.path.exists(gif_path):
+            return None
+
+        try:
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i", gif_path,
+                "-movflags", "faststart",
+                "-pix_fmt", "yuv420p",
+                "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                output_mp4_path
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+            if proc.returncode == 0 and os.path.exists(output_mp4_path) and os.path.getsize(output_mp4_path) > 0:
+                logger.info("Successfully converted GIF to MP4: %s -> %s", gif_path, output_mp4_path)
+                return output_mp4_path
+            else:
+                err_msg = stderr.decode("utf-8", errors="ignore") if stderr else "unknown error"
+                logger.warning("ffmpeg GIF to MP4 conversion failed (code %d): %s", proc.returncode, err_msg)
+        except Exception as e:
+            logger.warning("Failed to convert GIF to MP4 via ffmpeg: %s", e)
+
+        return None
+
 
 media_inspector = MediaInspector()

@@ -59,6 +59,24 @@ def is_image(filename: str, mime_type: Optional[str] = None) -> bool:
     return False
 
 
+def is_gif(filename_or_path: str, mime_type: Optional[str] = None) -> bool:
+    """Check if file is a GIF by extension, MIME type, or file header."""
+    ext = os.path.splitext(filename_or_path)[1].lower()
+    if ext == ".gif":
+        return True
+    if mime_type and mime_type.lower() in ("image/gif", "video/gif"):
+        return True
+    if os.path.exists(filename_or_path) and os.path.isfile(filename_or_path):
+        try:
+            with open(filename_or_path, "rb") as f:
+                header = f.read(6)
+                if header in (b"GIF87a", b"GIF89a"):
+                    return True
+        except Exception:
+            pass
+    return False
+
+
 def get_file_type_category(filename: str, mime_type: Optional[str] = None) -> str:
     """
     Return high-level category: VIDEO, AUDIO, IMAGE, ARCHIVE, or DOCUMENT.

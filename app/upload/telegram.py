@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from typing import Any, Callable, Optional
 from pyrogram import Client
 from pyrogram.errors import FloodWait
@@ -11,7 +12,7 @@ from app.core.exceptions import CancelledError, TelegramUploadError
 from app.core.logging import get_logger
 from app.upload.media import media_inspector
 from app.upload.progress import UploadProgressTracker
-from app.utils.mime import is_audio, is_video
+from app.utils.mime import is_audio, is_gif, is_video
 
 logger = get_logger("telegram_uploader")
 
@@ -34,9 +35,31 @@ class TelegramUploadManager:
     ) -> Message:
         """
         Upload file to Telegram with concurrency control, progress reporting, and FloodWait backoff.
+        Automatically converts GIF files to MP4 format for upload.
         """
         if not os.path.exists(file_path):
             raise TelegramUploadError(f"File to upload not found: {file_path}")
+
+        thumb_path = None
+        converted_mp4_path = None
+
+        # Automatically convert GIF to MP4 format
+        if is_gif(filename) or is_gif(file_path):
+            logger.info("Detected GIF file '%s'; converting to MP4 format before uploading...", filename)
+            target_mp4 = f"{os.path.splitext(file_path)[0]}.mp4"
+            if target_mp4 == file_path:
+                target_mp4 = f"{file_path}_converted.mp4"
+
+            converted = await media_inspector.convert_gif_to_mp4(file_path, target_mp4)
+            if converted and os.path.exists(converted):
+                converted_mp4_path = converted
+                file_path = converted
+                base_name, _ = os.path.splitext(filename)
+                orig_filename = filename
+                filename = f"{base_name}.mp4"
+                if caption:
+                    caption = caption.replace(orig_filename, filename)
+                logger.info("Using converted MP4: %s (filename: %s)", file_path, filename)
 
         filesize = os.path.getsize(file_path)
         tracker = UploadProgressTracker(
@@ -58,7 +81,6 @@ class TelegramUploadManager:
                 except Exception as e:
                     logger.warning("Error in upload UI progress callback: %s", e)
 
-        thumb_path = None
         try:
             async with self._semaphore:
                 if cancel_event and cancel_event.is_set():
@@ -128,6 +150,11 @@ class TelegramUploadManager:
             if thumb_path and os.path.exists(thumb_path):
                 try:
                     os.remove(thumb_path)
+                except Exception:
+                    pass
+            if converted_mp4_path and os.path.exists(converted_mp4_path):
+                try:
+                    os.remove(converted_mp4_path)
                 except Exception:
                     pass
 
