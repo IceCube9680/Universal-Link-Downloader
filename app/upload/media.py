@@ -95,7 +95,7 @@ class MediaInspector:
     async def convert_gif_to_mp4(self, gif_path: str, output_mp4_path: str) -> Optional[str]:
         """
         Convert a GIF file to MP4 format using ffmpeg.
-        Uses yuv420p pixel format, faststart, and even dimensions for universal Telegram compatibility.
+        Uses libx264, yuv420p pixel format, faststart, and even dimensions for universal Telegram compatibility.
         """
         if not self.has_ffmpeg or not os.path.exists(gif_path):
             return None
@@ -105,7 +105,9 @@ class MediaInspector:
                 "ffmpeg",
                 "-y",
                 "-i", gif_path,
-                "-movflags", "faststart",
+                "-c:v", "libx264",
+                "-an",
+                "-movflags", "+faststart",
                 "-pix_fmt", "yuv420p",
                 "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
                 output_mp4_path

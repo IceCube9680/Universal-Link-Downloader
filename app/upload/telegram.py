@@ -42,6 +42,7 @@ class TelegramUploadManager:
 
         thumb_path = None
         converted_mp4_path = None
+        is_gif_converted = False
 
         # Automatically convert GIF to MP4 format
         if is_gif(filename) or is_gif(file_path):
@@ -57,6 +58,7 @@ class TelegramUploadManager:
                 base_name, _ = os.path.splitext(filename)
                 orig_filename = filename
                 filename = f"{base_name}.mp4"
+                is_gif_converted = True
                 if caption:
                     caption = caption.replace(orig_filename, filename)
                 logger.info("Using converted MP4: %s (filename: %s)", file_path, filename)
@@ -93,23 +95,36 @@ class TelegramUploadManager:
                 # Retry loop for FloodWait
                 while True:
                     try:
-                        # 1. Video mode
-                        if upload_mode == UploadMode.MEDIA.value and is_vid:
+                        # 1. GIF or Video mode (Always upload GIF as playable MP4 video/animation)
+                        if is_gif_converted or (upload_mode == UploadMode.MEDIA.value and is_vid):
                             meta = await media_inspector.get_video_metadata(file_path)
                             thumb_path = f"{file_path}.thumb.jpg"
                             generated_thumb = await media_inspector.generate_thumbnail(file_path, thumb_path)
 
-                            return await client.send_video(
-                                chat_id=chat_id,
-                                video=file_path,
-                                caption=caption,
-                                duration=meta.get("duration") or 0,
-                                width=meta.get("width") or 0,
-                                height=meta.get("height") or 0,
-                                thumb=generated_thumb if generated_thumb else None,
-                                supports_streaming=True,
-                                progress=pyrogram_progress_cb
-                            )
+                            try:
+                                return await client.send_video(
+                                    chat_id=chat_id,
+                                    video=file_path,
+                                    caption=caption,
+                                    duration=meta.get("duration") or 0,
+                                    width=meta.get("width") or 0,
+                                    height=meta.get("height") or 0,
+                                    thumb=generated_thumb if generated_thumb else None,
+                                    supports_streaming=True,
+                                    progress=pyrogram_progress_cb
+                                )
+                            except Exception as vid_err:
+                                logger.warning("send_video failed for %s, trying send_animation: %s", filename, vid_err)
+                                return await client.send_animation(
+                                    chat_id=chat_id,
+                                    animation=file_path,
+                                    caption=caption,
+                                    duration=meta.get("duration") or 0,
+                                    width=meta.get("width") or 0,
+                                    height=meta.get("height") or 0,
+                                    thumb=generated_thumb if generated_thumb else None,
+                                    progress=pyrogram_progress_cb
+                                )
 
                         # 2. Audio mode
                         elif upload_mode == UploadMode.MEDIA.value and is_aud:
@@ -140,10 +155,10 @@ class TelegramUploadManager:
                     except Exception as e:
                         logger.error("Failed to upload file to Telegram: %s", e)
                         # If video upload failed, fallback to send_document once
-                        if upload_mode == UploadMode.MEDIA.value and (is_vid or is_aud):
+                        if is_gif_converted or (upload_mode == UploadMode.MEDIA.value and (is_vid or is_aud)):
                             logger.info("Retrying upload as document fallback...")
                             upload_mode = UploadMode.DOCUMENT.value
-                            continue
+                            is_gif_converted = False
                         raise TelegramUploadError(f"Failed to upload file to Telegram: {e}") from e
 
         finally:
