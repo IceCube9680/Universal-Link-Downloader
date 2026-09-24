@@ -107,17 +107,17 @@ class TeraBoxDetector:
             return None
 
         # 1. Query parameters
-        match_q = re.search(r'[?&](?:surl|shorturl|code|key|id|shareid)=([a-zA-Z0-9_-]+)', url)
+        match_q = re.search(r'[?&](?:surl|shorturl|code|key|id|shareid)=([a-zA-Z0-9_\-\.~%+=]+)', url)
         if match_q:
             return match_q.group(1)
 
         # 2. Path prefix patterns
-        match_path = re.search(r'/(?:s|wap/share/filelist|sharing/link|sharing/init|sharing|share/init|share/list|share|app|d|file|web/share|wap/link|main)/([a-zA-Z0-9_-]+)', url)
+        match_path = re.search(r'/(?:s|wap/share/filelist|sharing/link|sharing/init|sharing|share/init|share/list|share|app|d|file|web/share|wap/link|main)/([a-zA-Z0-9_\-\.~%+=]+)', url)
         if match_path:
             return match_path.group(1)
 
         # 3. Path ending directly in 8+ character alphanumeric key or 1-prefixed key
-        match_direct = re.search(r'/(1[a-zA-Z0-9_-]{7,}|[a-zA-Z0-9_-]{10,})(?:[/?#]|$)', url)
+        match_direct = re.search(r'/(1[a-zA-Z0-9_\-\.~%+=]{7,}|[a-zA-Z0-9_\-\.~%+=]{10,})(?:[/?#]|$)', url)
         if match_direct:
             return match_direct.group(1)
 

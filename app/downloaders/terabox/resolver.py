@@ -194,12 +194,9 @@ class TeraBoxResolver:
                                 if isinstance(data, dict):
                                     errno = data.get("errno", -1)
                                     if errno in (105, 112, 115, 140, 400141):
-                                        return TeraBoxResolutionResult(
-                                            success=False,
-                                            link_info=link_info,
-                                            error_type=TeraBoxErrorType.NOT_FOUND,
-                                            error_message="The shared TeraBox file was deleted, cancelled, or does not exist."
-                                        )
+                                        last_error_type = TeraBoxErrorType.NOT_FOUND
+                                        last_error_msg = "The shared TeraBox file was deleted, cancelled, or does not exist."
+                                        continue
                                     if errno == 0 and ("list" in data or "file_list" in data):
                                         f = self._parse_file_from_data(data, s_key)
                                         if f and f.direct_url:
@@ -208,19 +205,6 @@ class TeraBoxResolver:
                                 pass
 
                             html = await resp.text()
-
-                            # Check for explicit expiration/not found in HTML text
-                            if "errno" in html:
-                                err_match = re.search(r'["\']?errno["\']?\s*[:=]\s*(\d+)', html)
-                                if err_match:
-                                    code = int(err_match.group(1))
-                                    if code in (105, 112, 115, 140, 400141):
-                                        return TeraBoxResolutionResult(
-                                            success=False,
-                                            link_info=link_info,
-                                            error_type=TeraBoxErrorType.NOT_FOUND,
-                                            error_message="The shared TeraBox file was deleted, cancelled, or does not exist."
-                                        )
 
                             # Extract jsToken
                             for token_pat in [
@@ -344,12 +328,9 @@ class TeraBoxResolver:
                                 continue
 
                             if errno in (105, 112, 115, 140, 400141):
-                                return TeraBoxResolutionResult(
-                                    success=False,
-                                    link_info=link_info,
-                                    error_type=TeraBoxErrorType.NOT_FOUND,
-                                    error_message="The shared TeraBox file was deleted, cancelled, or does not exist."
-                                )
+                                last_error_type = TeraBoxErrorType.NOT_FOUND
+                                last_error_msg = "The shared TeraBox file was deleted, cancelled, or does not exist."
+                                continue
 
                             if errno in (4000004, 4000005):
                                 last_error_type = TeraBoxErrorType.RATE_LIMITED
@@ -398,15 +379,27 @@ class TeraBoxResolver:
         # -------------------------------------------------------------
         if not use_cookie:
             for s_key in link_info.surl_candidates:
+                full_tb_url = f"https://terabox.com/s/{s_key}"
+                raw_target_url = link_info.raw_url
+                encoded_tb = urllib.parse.quote_plus(full_tb_url)
+                encoded_raw = urllib.parse.quote_plus(raw_target_url)
+                pwd_param = f"&pwd={link_info.password}" if link_info.password else ""
+
                 fallback_gateways = [
-                    {"method": "GET", "url": f"https://terabox-dl.qtcloud.workers.dev/api/get-info?shorturl={s_key}" + (f"&pwd={link_info.password}" if link_info.password else "")},
-                    {"method": "GET", "url": f"https://yt-video-production.up.railway.app/terabox?url=https://terabox.com/s/{s_key}"},
-                    {"method": "GET", "url": f"https://terabox-api.gray.stream/api?url=https://terabox.com/s/{s_key}"},
+                    {"method": "GET", "url": f"https://terabox-dl.qtcloud.workers.dev/api/get-info?shorturl={s_key}{pwd_param}"},
+                    {"method": "GET", "url": f"https://terabox-dl.qtcloud.workers.dev/api/get-info?url={encoded_raw}{pwd_param}"},
+                    {"method": "GET", "url": f"https://yt-video-production.up.railway.app/terabox?url={encoded_tb}"},
+                    {"method": "GET", "url": f"https://yt-video-production.up.railway.app/terabox?url={encoded_raw}"},
+                    {"method": "GET", "url": f"https://terabox-api.gray.stream/api?url={encoded_tb}"},
+                    {"method": "GET", "url": f"https://terabox-api.gray.stream/api?url={encoded_raw}"},
                     {"method": "GET", "url": f"https://terabox.hnn.workers.dev/api/get-info?shorturl={s_key}"},
-                    {"method": "GET", "url": f"https://teraboxvideodownloader.nepcoderdevs.workers.dev/?url=https://terabox.com/s/{s_key}"},
-                    {"method": "POST", "url": "https://teraboxvideodownloader.nepcoderdevs.workers.dev/", "json": {"url": f"https://terabox.com/s/{s_key}"}},
-                    {"method": "GET", "url": f"https://tera.instavideosave.com/?url=https://terabox.com/s/{s_key}"},
-                    {"method": "GET", "url": f"https://terabox-downloader-five.vercel.app/api?url=https://terabox.com/s/{s_key}"}
+                    {"method": "GET", "url": f"https://teraboxvideodownloader.nepcoderdevs.workers.dev/?url={encoded_tb}"},
+                    {"method": "GET", "url": f"https://teraboxvideodownloader.nepcoderdevs.workers.dev/?url={encoded_raw}"},
+                    {"method": "POST", "url": "https://teraboxvideodownloader.nepcoderdevs.workers.dev/", "json": {"url": full_tb_url}},
+                    {"method": "POST", "url": "https://teraboxvideodownloader.nepcoderdevs.workers.dev/", "json": {"url": raw_target_url}},
+                    {"method": "GET", "url": f"https://tera.instavideosave.com/?url={encoded_tb}"},
+                    {"method": "GET", "url": f"https://terabox-downloader-five.vercel.app/api?url={encoded_tb}"},
+                    {"method": "GET", "url": f"https://terabox-gateway.vercel.app/api?url={encoded_tb}"}
                 ]
                 for gw in fallback_gateways:
                     try:

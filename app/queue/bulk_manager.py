@@ -393,7 +393,11 @@ class BulkJobManager:
 
         successful_cnt = sum(1 for i in ctx.items if i.state == BulkItemState.COMPLETED)
         failed_cnt = sum(1 for i in ctx.items if i.state == BulkItemState.FAILED)
-        failed_reasons = [f"{i.filename or i.url[:30]}: {i.error}" for i in ctx.items if i.state == BulkItemState.FAILED and i.error]
+        failed_reasons = []
+        for i in ctx.items:
+            if i.state == BulkItemState.FAILED and i.error:
+                label = i.filename or (i.url if len(i.url) <= 60 else f"{i.url[:57]}...")
+                failed_reasons.append(f"{label}: {i.error}")
 
         # 4. Final summary report
         if not ctx.cancel_event.is_set():
