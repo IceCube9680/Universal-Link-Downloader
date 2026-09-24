@@ -87,3 +87,26 @@ def get_admin_dashboard_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔄 Refresh Dashboard", callback_data="admin_tab:refresh")
         ]
     ])
+
+
+def get_admin_backup_channel_keyboard() -> InlineKeyboardMarkup:
+    """Interactive management keyboard for Backup/Dump Channel settings."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✏️ Set / Change Channel", callback_data="admin_backup:prompt"),
+            InlineKeyboardButton("🔄 Test Connection", callback_data="admin_backup:test")
+        ],
+        [
+            InlineKeyboardButton("🗑️ Remove Setting", callback_data="admin_backup:clear"),
+            InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_tab:overview")
+        ]
+    ])
+
+
+def get_admin_backup_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard to cancel active backup channel prompt."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("❌ Cancel", callback_data="admin_backup:cancel_prompt")
+        ]
+    ])

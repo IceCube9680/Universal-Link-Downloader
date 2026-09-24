@@ -6,6 +6,7 @@ import sys
 from pyrogram import Client
 
 from app.core.config import settings
+from app.core.backup_channel import backup_channel_provider
 from app.core.logging import setup_logging, get_logger
 from app.database.database import Database
 from app.download.filesystem import fs_manager
@@ -29,6 +30,7 @@ async def run_worker() -> None:
     # 1. Connect Database & Redis
     db = Database(settings.DATABASE_URL)
     await db.connect()
+    await backup_channel_provider.initialize(db)
 
     if settings.REDIS_URL:
         await redis_manager.connect()

@@ -12,6 +12,7 @@ from app.bot.handlers import (
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.database.database import Database
+from app.core.backup_channel import backup_channel_provider
 from app.download.filesystem import fs_manager
 from app.downloaders.terabox.credentials import terabox_credentials
 from app.queue.bulk_manager import bulk_manager
@@ -60,6 +61,7 @@ class UniversalBot:
 
         await self.db.connect()
         await terabox_credentials.initialize(self.db)
+        await backup_channel_provider.initialize(self.db)
 
         if settings.REDIS_URL:
             await redis_manager.connect()

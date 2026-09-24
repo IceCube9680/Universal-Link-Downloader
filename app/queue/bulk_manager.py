@@ -10,9 +10,10 @@ from pyrogram import Client
 
 from app.bot.ui.keyboards import get_bulk_cancel_keyboard
 from app.bot.ui.messages import get_bulk_process_card, get_bulk_summary_card
+from app.core.backup_channel import backup_channel_provider
 from app.core.channel_logger import channel_logger
 from app.core.config import settings
-from app.core.exceptions import CancelledError, DownloaderError, FileSizeLimitError
+from app.core.exceptions import CancelledError, DownloaderError, FileSizeLimitError, TelegramUploadError
 from app.core.logging import get_logger
 from app.core.metrics import metrics
 from app.core.telegram_safe import ThrottledMessageUpdater, safe_telegram_call
@@ -265,14 +266,24 @@ class BulkJobManager:
                         item.state = BulkItemState.CANCELLED
                         return
 
+                    backup_target = backup_channel_provider.get_backup_channel()
+                    if not backup_target:
+                        raise TelegramUploadError(
+                            "Direct uploads to bot chat are disabled and no Backup Channel is configured. "
+                            "Please set a backup channel using /setbackup or in Admin Dashboard."
+                        )
+
                     item.state = BulkItemState.UPLOADING
                     await update_live_ui(active_fn=item.filename)
 
+                    svc_tag = re.sub(r'[^a-zA-Z0-9_]', '', str(item.service_name).lower().replace(' ', '_'))
                     caption = (
                         f"📄 **{item.filename}**\n"
                         f"📦 **Size:** {format_filesize(item.filesize)}\n"
+                        f"👤 **User:** `{user_id}`\n"
                         f"🌐 **Source:** {item.service_name}\n"
-                        f"🆔 **Bulk Job:** `#{bulk_id}`"
+                        f"🆔 **Bulk Job:** `#{bulk_id}`\n\n"
+                        f"#backup #bulk_{bulk_id} #user_{user_id} #{svc_tag}"
                     )
 
                     async def up_progress(tracker: UploadProgressTracker):
@@ -280,7 +291,7 @@ class BulkJobManager:
 
                     sent_msg = await telegram_uploader.upload_file(
                         client=client,
-                        chat_id=chat_id,
+                        chat_id=backup_target,
                         file_path=dl_result.file_path,
                         filename=item.filename,
                         caption=caption,
@@ -288,36 +299,6 @@ class BulkJobManager:
                         ui_progress_callback=up_progress,
                         cancel_event=ctx.cancel_event
                     )
-
-                    # Backup channel copy
-                    if settings.BACKUP_CHANNEL_ID and sent_msg and client:
-                        try:
-                            svc_tag = re.sub(r'[^a-zA-Z0-9_]', '', str(item.service_name).lower().replace(' ', '_'))
-                            backup_caption = (
-                                f"📄 **{item.filename}**\n"
-                                f"📦 **Size:** {format_filesize(item.filesize)}\n"
-                                f"👤 **User:** `{user_id}`\n"
-                                f"🌐 **Source:** {item.service_name}\n"
-                                f"🆔 **Bulk Job:** `#{bulk_id}`\n\n"
-                                f"#backup #bulk_{bulk_id} #user_{user_id} #{svc_tag}"
-                            )
-                            try:
-                                await safe_telegram_call(
-                                    client.copy_message,
-                                    chat_id=settings.BACKUP_CHANNEL_ID,
-                                    from_chat_id=sent_msg.chat.id,
-                                    message_id=sent_msg.id,
-                                    caption=backup_caption
-                                )
-                            except Exception:
-                                await safe_telegram_call(
-                                    client.forward_messages,
-                                    chat_id=settings.BACKUP_CHANNEL_ID,
-                                    from_chat_id=sent_msg.chat.id,
-                                    message_ids=[sent_msg.id]
-                                )
-                        except Exception as be:
-                            logger.debug("Failed to forward backup copy for %s: %s", item.item_id, be)
 
                 item.state = BulkItemState.COMPLETED
                 ctx.total_downloaded_bytes += item.filesize

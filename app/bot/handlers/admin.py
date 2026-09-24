@@ -8,8 +8,13 @@ from pyrogram.errors import MessageNotModified
 from pyrogram.types import CallbackQuery, Message
 
 from app.bot.filters.admin import admin_filter, is_admin_user
-from app.bot.ui.keyboards import get_admin_dashboard_keyboard
+from app.bot.ui.keyboards import (
+    get_admin_backup_cancel_keyboard,
+    get_admin_backup_channel_keyboard,
+    get_admin_dashboard_keyboard
+)
 from app.bot.ui.messages import get_stats_card
+from app.core.backup_channel import backup_channel_provider, normalize_channel_id
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.metrics import metrics
@@ -24,6 +29,7 @@ from app.utils.filesize import format_filesize
 logger = get_logger("admin_handlers")
 
 _pending_cookie_admins: Dict[int, float] = {}
+_pending_backup_admins: Dict[int, float] = {}
 
 
 def is_pending_cookie_admin(user_id: int) -> bool:
@@ -39,6 +45,21 @@ def is_pending_cookie_admin(user_id: int) -> bool:
 
 def clear_pending_cookie_admin(user_id: int) -> None:
     _pending_cookie_admins.pop(user_id, None)
+
+
+def is_pending_backup_admin(user_id: int) -> bool:
+    """Check if admin is actively waiting to send a Backup Channel ID/username."""
+    if user_id not in _pending_backup_admins:
+        return False
+    ts = _pending_backup_admins.get(user_id, 0)
+    if time.time() - ts > 120:
+        _pending_backup_admins.pop(user_id, None)
+        return False
+    return True
+
+
+def clear_pending_backup_admin(user_id: int) -> None:
+    _pending_backup_admins.pop(user_id, None)
 
 
 def register_admin_handlers(app: Client, db: Database) -> None:
@@ -315,40 +336,98 @@ def register_admin_handlers(app: Client, db: Database) -> None:
             logger.error("Failed to read or send logs: %s", e)
             await message.reply_text(f"❌ Error reading logs: {e}")
 
-    @app.on_message(filters.command("backup") & admin_filter)
+    @app.on_message(filters.command(["backup", "backupstatus"]) & admin_filter)
     async def admin_backup_handler(client: Client, message: Message):
-        if not settings.BACKUP_CHANNEL_ID:
+        info = backup_channel_provider.get_info()
+        chan = info.get("channel")
+        if not chan:
             await message.reply_text(
                 "⚠️ **Backup Channel Not Configured**\n\n"
-                "Set `BACKUP_CHANNEL_ID` in `.env` (e.g. `-1001234567890` or `@channel_name`) to automatically dump copies of all downloaded files.",
-                reply_markup=get_admin_dashboard_keyboard()
+                "Files cannot be uploaded because direct uploads to bot chat are disabled.\n\n"
+                "Use `/setbackup <channel_id or @username>` or click below to configure a backup channel.",
+                reply_markup=get_admin_backup_channel_keyboard()
             )
             return
 
         status_msg = await message.reply_text(
-            f"📡 **Testing Backup Channel Access...**\n\nTarget: `{settings.BACKUP_CHANNEL_ID}`"
+            f"📡 **Testing Backup Channel Access...**\n\nTarget: `{chan}`"
         )
-        try:
-            ping_msg = await client.send_message(
-                chat_id=settings.BACKUP_CHANNEL_ID,
-                text=f"🔔 **Backup Channel Health Check**\n\nBot is successfully connected and authorized to dump downloaded files!"
-            )
+        success, err_or_msg = await backup_channel_provider.test_channel_access(client, chan)
+        src_text = "Database (Dynamic)" if info.get("source") == "database" else "Environment (.env)"
+        if success:
             await status_msg.edit_text(
                 f"✅ **Backup Channel Connected!**\n\n"
-                f"• Channel ID: `{settings.BACKUP_CHANNEL_ID}`\n"
-                f"• Test Message ID: `{ping_msg.id}`\n\n"
-                f"All downloaded files will automatically be forwarded to this channel.",
-                reply_markup=get_admin_dashboard_keyboard()
+                f"• Target Channel: `{chan}`\n"
+                f"• Configuration Source: `{src_text}`\n"
+                f"• Status: `Active`\n\n"
+                f"All downloaded media files will be uploaded directly to this channel.",
+                reply_markup=get_admin_backup_channel_keyboard()
             )
-        except Exception as e:
-            logger.warning("Backup channel test failed for %s: %s", settings.BACKUP_CHANNEL_ID, e)
+        else:
             await status_msg.edit_text(
                 f"❌ **Backup Channel Connection Failed**\n\n"
-                f"Target: `{settings.BACKUP_CHANNEL_ID}`\n"
-                f"Error: `{str(e)}`\n\n"
+                f"Target: `{chan}`\n"
+                f"Configuration Source: `{src_text}`\n"
+                f"Error: `{err_or_msg}`\n\n"
                 f"⚠️ Make sure the bot is an **Administrator** with 'Post Messages' permission in the channel.",
-                reply_markup=get_admin_dashboard_keyboard()
+                reply_markup=get_admin_backup_channel_keyboard()
             )
+
+    @app.on_message(filters.command(["setbackup", "setchannel", "setbackupchannel"]) & admin_filter)
+    async def admin_set_backup_channel_handler(client: Client, message: Message):
+        user = message.from_user
+        if not user:
+            return
+
+        parts = message.text.split(maxsplit=1) if message.text else []
+        if len(parts) > 1 and parts[1].strip():
+            raw_target = parts[1].strip()
+            target = normalize_channel_id(raw_target)
+            if not target:
+                await message.reply_text("❌ Invalid channel ID or username format.", reply_markup=get_admin_backup_channel_keyboard())
+                return
+
+            status_msg = await message.reply_text(f"📡 Testing access to `{target}`...")
+            success, err_or_msg = await backup_channel_provider.test_channel_access(client, target)
+            if not success:
+                await status_msg.edit_text(
+                    f"❌ **Failed to Connect to Backup Channel**\n\n"
+                    f"Target: `{target}`\n"
+                    f"Error: `{err_or_msg}`\n\n"
+                    f"⚠️ Make sure the bot is added as an **Administrator** in the channel with **Post Messages** permission.",
+                    reply_markup=get_admin_backup_channel_keyboard()
+                )
+                return
+
+            saved, save_msg = await backup_channel_provider.set_backup_channel(target)
+            if saved:
+                await status_msg.edit_text(
+                    f"✅ **Backup Channel Configured Successfully!**\n\n"
+                    f"• Target: `{target}`\n"
+                    f"• Source: `Database`\n"
+                    f"• Verification: `{err_or_msg}`\n\n"
+                    f"All downloaded files will now be uploaded directly to this channel.",
+                    reply_markup=get_admin_backup_channel_keyboard()
+                )
+            else:
+                await status_msg.edit_text(f"❌ {save_msg}", reply_markup=get_admin_backup_channel_keyboard())
+            return
+
+        _pending_backup_admins[user.id] = time.time()
+        await message.reply_text(
+            "📡 **Set Backup Channel**\n\n"
+            "Please send the Channel ID (e.g. `-1001234567890`), `@channel_name`, or **forward any message** from your target channel into this chat.\n\n"
+            "⚠️ _Ensure this bot is an **Administrator** in the channel with Post Messages permission._\n\n"
+            "Send `/cancel` to cancel.",
+            reply_markup=get_admin_backup_cancel_keyboard()
+        )
+
+    @app.on_message(filters.command(["clearbackup", "delbackup"]) & admin_filter)
+    async def admin_clear_backup_channel_handler(client: Client, message: Message):
+        await backup_channel_provider.clear_backup_channel()
+        if message.from_user:
+            clear_pending_backup_admin(message.from_user.id)
+        await message.reply_text("🗑️ Backup channel configuration removed from database.", reply_markup=get_admin_backup_channel_keyboard())
 
     @app.on_message(filters.command("clearcache") & admin_filter)
     async def admin_clearcache_handler(client: Client, message: Message):
@@ -473,6 +552,73 @@ def register_admin_handlers(app: Client, db: Database) -> None:
         except Exception:
             pass
 
+    # Pending Backup Channel conversation message filter & handler
+    pending_backup_filter = filters.create(
+        lambda _, __, m: bool(
+            m.from_user
+            and is_admin_user(m.from_user.id)
+            and is_pending_backup_admin(m.from_user.id)
+        )
+    )
+
+    @app.on_message(pending_backup_filter & filters.private)
+    async def admin_pending_backup_response_handler(client: Client, message: Message):
+        user = message.from_user
+        if not user:
+            return
+        clear_pending_backup_admin(user.id)
+
+        # Check cancel command
+        if message.text and message.text.strip().lower() in ("/cancel", "cancel"):
+            await message.reply_text("🛑 Backup channel setup cancelled.", reply_markup=get_admin_backup_channel_keyboard())
+            try:
+                message.stop_propagation()
+            except Exception:
+                pass
+            return
+
+        # Extract target channel from forwarded chat or text
+        if message.forward_from_chat:
+            target = message.forward_from_chat.id
+        elif message.text:
+            target = normalize_channel_id(message.text.strip())
+        else:
+            await message.reply_text("❌ Could not detect channel ID or username from message.", reply_markup=get_admin_backup_channel_keyboard())
+            return
+
+        if not target:
+            await message.reply_text("❌ Invalid channel format. Send a valid ID (e.g. `-1001234567890`) or `@username`.", reply_markup=get_admin_backup_channel_keyboard())
+            return
+
+        status_msg = await message.reply_text(f"📡 Testing access to `{target}`...")
+        success, err_or_msg = await backup_channel_provider.test_channel_access(client, target)
+        if not success:
+            await status_msg.edit_text(
+                f"❌ **Failed to Connect to Backup Channel**\n\n"
+                f"Target: `{target}`\n"
+                f"Error: `{err_or_msg}`\n\n"
+                f"⚠️ Make sure the bot is added as an **Administrator** in the channel with **Post Messages** permission.",
+                reply_markup=get_admin_backup_channel_keyboard()
+            )
+        else:
+            saved, save_msg = await backup_channel_provider.set_backup_channel(target)
+            if saved:
+                await status_msg.edit_text(
+                    f"✅ **Backup Channel Configured Successfully!**\n\n"
+                    f"• Target: `{target}`\n"
+                    f"• Source: `Database`\n"
+                    f"• Verification: `{err_or_msg}`\n\n"
+                    f"All downloaded files will now be uploaded directly to this channel.",
+                    reply_markup=get_admin_backup_channel_keyboard()
+                )
+            else:
+                await status_msg.edit_text(f"❌ {save_msg}", reply_markup=get_admin_backup_channel_keyboard())
+
+        try:
+            message.stop_propagation()
+        except Exception:
+            pass
+
     # Callback Query Router for Admin Dashboard Tabs
     @app.on_callback_query(filters.regex(r"^admin_tab:"))
     async def admin_tab_callback_handler(client: Client, callback_query: CallbackQuery):
@@ -576,16 +722,18 @@ def register_admin_handlers(app: Client, db: Database) -> None:
                 await callback_query.answer()
 
             elif tab == "backup":
-                b_chan = settings.BACKUP_CHANNEL_ID or "Not Configured"
-                status_icon = "✅ Active" if settings.BACKUP_CHANNEL_ID else "⚪ Disabled"
+                info = backup_channel_provider.get_info()
+                b_chan = info.get("channel") or "Not Configured"
+                status_icon = "✅ Active" if info.get("is_configured") else "⚪ Disabled"
+                src = f" ({info.get('source')})" if info.get("is_configured") else ""
                 text = (
-                    f"📡 **Backup / Dump Channel Status:**\n\n"
+                    f"📡 **Backup / Dump Channel Management:**\n\n"
                     f"• Status: `{status_icon}`\n"
-                    f"• Target Channel: `{b_chan}`\n\n"
-                    f"💡 _All downloaded media files are automatically copied/forwarded to this channel with indexing metadata tags._\n\n"
-                    f"Use `/backup` to perform a live connection health check."
+                    f"• Target Channel: `{b_chan}`{src}\n\n"
+                    f"💡 _All downloaded media files are uploaded directly to this channel instead of the bot chat._\n\n"
+                    f"Use the buttons below or `/setbackup <channel>` to configure."
                 )
-                await callback_query.edit_message_text(text, reply_markup=get_admin_dashboard_keyboard())
+                await callback_query.edit_message_text(text, reply_markup=get_admin_backup_channel_keyboard())
                 await callback_query.answer()
 
             elif tab == "clearcache":
@@ -593,6 +741,83 @@ def register_admin_handlers(app: Client, db: Database) -> None:
                 await callback_query.answer(f"🧹 Removed {purged} temporary files!", show_alert=True)
                 stats = await stats_repo.get_stats()
                 await callback_query.edit_message_text(get_stats_card(stats), reply_markup=get_admin_dashboard_keyboard())
+
+        except MessageNotModified:
+            try:
+                await callback_query.answer()
+            except Exception:
+                pass
+
+    # Callback Query Router for Backup Channel Actions
+    @app.on_callback_query(filters.regex(r"^admin_backup:"))
+    async def admin_backup_callback_handler(client: Client, callback_query: CallbackQuery):
+        user = callback_query.from_user
+        if not user or not is_admin_user(user.id):
+            await callback_query.answer("⛔ Unauthorized.", show_alert=True)
+            return
+
+        action = callback_query.data.split(":", 1)[1]
+
+        try:
+            if action == "prompt":
+                _pending_backup_admins[user.id] = time.time()
+                await callback_query.edit_message_text(
+                    "📡 **Set Backup Channel**\n\n"
+                    "Please send the Channel ID (e.g. `-1001234567890`), `@channel_name`, or **forward any message** from your target channel into this chat.\n\n"
+                    "⚠️ _Ensure this bot is an **Administrator** in the channel with Post Messages permission._",
+                    reply_markup=get_admin_backup_cancel_keyboard()
+                )
+                await callback_query.answer()
+
+            elif action == "cancel_prompt":
+                clear_pending_backup_admin(user.id)
+                info = backup_channel_provider.get_info()
+                b_chan = info.get("channel") or "Not Configured"
+                status_icon = "✅ Active" if info.get("is_configured") else "⚪ Disabled"
+                src = f" ({info.get('source')})" if info.get("is_configured") else ""
+                text = (
+                    f"📡 **Backup / Dump Channel Management:**\n\n"
+                    f"• Status: `{status_icon}`\n"
+                    f"• Target Channel: `{b_chan}`{src}\n\n"
+                    f"💡 _All downloaded media files are uploaded directly to this channel instead of the bot chat._"
+                )
+                await callback_query.edit_message_text(text, reply_markup=get_admin_backup_channel_keyboard())
+                await callback_query.answer("Cancelled.")
+
+            elif action == "test":
+                info = backup_channel_provider.get_info()
+                chan = info.get("channel")
+                if not chan:
+                    await callback_query.answer("⚠️ No backup channel is currently configured.", show_alert=True)
+                    return
+                await callback_query.answer("📡 Testing channel access...")
+                success, msg = await backup_channel_provider.test_channel_access(client, chan)
+                status_icon = "✅ Connected" if success else "❌ Failed"
+                src_text = "Database (Dynamic)" if info.get("source") == "database" else "Environment (.env)"
+                text = (
+                    f"📡 **Backup Channel Health Check:**\n\n"
+                    f"• Target Channel: `{chan}`\n"
+                    f"• Status: `{status_icon}`\n"
+                    f"• Configuration Source: `{src_text}`\n\n"
+                    f"**Details:**\n{msg}"
+                )
+                await callback_query.edit_message_text(text, reply_markup=get_admin_backup_channel_keyboard())
+
+            elif action == "clear":
+                await backup_channel_provider.clear_backup_channel()
+                clear_pending_backup_admin(user.id)
+                await callback_query.answer("🗑️ Backup channel setting removed from database.", show_alert=True)
+                info = backup_channel_provider.get_info()
+                b_chan = info.get("channel") or "Not Configured"
+                status_icon = "✅ Active" if info.get("is_configured") else "⚪ Disabled"
+                src = f" ({info.get('source')})" if info.get("is_configured") else ""
+                text = (
+                    f"📡 **Backup / Dump Channel Management:**\n\n"
+                    f"• Status: `{status_icon}`\n"
+                    f"• Target Channel: `{b_chan}`{src}\n\n"
+                    f"💡 _All downloaded media files are uploaded directly to this channel instead of the bot chat._"
+                )
+                await callback_query.edit_message_text(text, reply_markup=get_admin_backup_channel_keyboard())
 
         except MessageNotModified:
             try:

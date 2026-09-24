@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 from pyrogram import Client
 from pyrogram.errors import MessageNotModified, RPCError
 
+from app.core.backup_channel import backup_channel_provider
 from app.core.config import settings
 from app.core.constants import JobStatus, UploadMode
 from app.core.exceptions import (
@@ -469,10 +470,21 @@ class JobQueue:
                         speed=tracker.speed
                     )
 
+            backup_target = backup_channel_provider.get_backup_channel()
+            if not backup_target:
+                raise TelegramUploadError(
+                    "Direct uploads to bot chat are disabled and no Backup Channel is configured. "
+                    "Please set a backup channel using /setbackup or in Admin Dashboard."
+                )
+
+            svc_tag = re.sub(r'[^a-zA-Z0-9_]', '', str(ctx.service_name).lower().replace(' ', '_'))
             caption = (
                 f"📄 **{ctx.filename}**\n"
                 f"📦 **Size:** {format_filesize(ctx.filesize)}\n"
-                f"🌐 **Source:** {ctx.service_name}"
+                f"👤 **User:** `{ctx.user_id}`\n"
+                f"🌐 **Source:** {ctx.service_name}\n"
+                f"🆔 **Job:** `#{ctx.job_id}`\n\n"
+                f"#backup #job_{ctx.job_id} #user_{ctx.user_id} #{svc_tag}"
             )
 
             if not self._client:
@@ -480,7 +492,7 @@ class JobQueue:
 
             sent_msg = await telegram_uploader.upload_file(
                 client=self._client,
-                chat_id=ctx.chat_id,
+                chat_id=backup_target,
                 file_path=download_result.file_path,
                 filename=ctx.filename,
                 caption=caption,
@@ -488,35 +500,6 @@ class JobQueue:
                 ui_progress_callback=upload_progress_ui,
                 cancel_event=ctx.cancel_event
             )
-
-            # Backup Channel Forwarding
-            if settings.BACKUP_CHANNEL_ID and sent_msg and self._client:
-                try:
-                    svc_tag = re.sub(r'[^a-zA-Z0-9_]', '', str(ctx.service_name).lower().replace(' ', '_'))
-                    backup_caption = (
-                        f"📄 **{ctx.filename}**\n"
-                        f"📦 **Size:** {format_filesize(ctx.filesize)}\n"
-                        f"👤 **User:** `{ctx.user_id}`\n"
-                        f"🌐 **Source:** {ctx.service_name}\n"
-                        f"🆔 **Job:** `#{ctx.job_id}`\n\n"
-                        f"#backup #job_{ctx.job_id} #user_{ctx.user_id} #{svc_tag}"
-                    )
-                    try:
-                        await self._client.copy_message(
-                            chat_id=settings.BACKUP_CHANNEL_ID,
-                            from_chat_id=sent_msg.chat.id,
-                            message_id=sent_msg.id,
-                            caption=backup_caption
-                        )
-                    except Exception as copy_err:
-                        logger.debug("copy_message to backup channel failed (%s), trying forward_messages", copy_err)
-                        await self._client.forward_messages(
-                            chat_id=settings.BACKUP_CHANNEL_ID,
-                            from_chat_id=sent_msg.chat.id,
-                            message_ids=[sent_msg.id]
-                        )
-                except Exception as be:
-                    logger.warning("Failed to forward backup copy to BACKUP_CHANNEL_ID (%s): %s", settings.BACKUP_CHANNEL_ID, be)
 
             # 5. COMPLETED
             ctx.status = JobStatus.COMPLETED

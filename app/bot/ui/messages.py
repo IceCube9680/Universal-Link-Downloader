@@ -148,9 +148,10 @@ def get_start_message(first_name: str) -> str:
     return (
         f"👋 **Hello {first_name}!**\n\n"
         "Welcome to the **Universal Link Downloader Bot** 🚀\n\n"
-        "Send me any direct or supported link, and I will fetch the file and upload it directly to Telegram for you.\n\n"
+        "Send me any direct or supported link, and I will download the file and upload it to the configured Backup Channel.\n\n"
         "⚡ **Features:**\n"
         "• High-speed streaming downloads\n"
+        "• Direct upload to Backup / Dump Channel\n"
         "• Support for direct HTTP/HTTPS files\n"
         "• Video streaming & thumbnail generation\n"
         "• Document & Archive uploads\n"
@@ -166,7 +167,7 @@ def get_help_message() -> str:
         "1. **Send a Link:** Simply paste any valid download URL into this chat.\n"
         "2. **Auto Detection:** The bot resolves the link, verifies security, and checks file size.\n"
         "3. **Progress Bar:** Watch live download and upload status.\n"
-        "4. **Delivery:** The completed file will be sent back directly to your chat.\n\n"
+        "4. **Delivery:** The completed file is uploaded directly to the configured Backup Channel.\n\n"
         "📋 **Available Commands:**\n"
         "• `/start` - Start the bot & welcome menu\n"
         "• `/help` - View this help guide\n"
@@ -299,6 +300,6 @@ def get_bulk_summary_card(
             lines.append(f"• _...and {len(failed_details) - 5} more_")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-    lines.append("✨ _All delivered files are available above in this chat._")
+    lines.append("✨ _All delivered files have been uploaded to the Backup Channel._")
     return "\n".join(lines)
 
