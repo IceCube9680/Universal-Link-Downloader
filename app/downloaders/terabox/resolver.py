@@ -164,8 +164,18 @@ class TeraBoxResolver:
         timestamp = ""
         primaryid = ""
 
+        effective_hosts: List[str] = []
+        if link_info.domain:
+            domain_clean = link_info.domain.lower().strip()
+            if not domain_clean.startswith("www."):
+                effective_hosts.append(f"www.{domain_clean}")
+            effective_hosts.append(domain_clean)
+        for h in TERABOX_MIRROR_HOSTS:
+            if h not in effective_hosts:
+                effective_hosts.append(h)
+
         for s_key in link_info.surl_candidates:
-            for host in TERABOX_MIRROR_HOSTS:
+            for host in effective_hosts:
                 page_urls = [
                     f"https://{host}/sharing/link?surl={s_key}",
                     f"https://{host}/wap/share/filelist?surl={s_key}"
@@ -264,7 +274,7 @@ class TeraBoxResolver:
         # -------------------------------------------------------------
         # Phase 2: Official Web & API Endpoints
         # -------------------------------------------------------------
-        for host in TERABOX_MIRROR_HOSTS:
+        for host in effective_hosts:
             api_headers = {
                 "User-Agent": DEFAULT_USER_AGENT,
                 "Referer": f"https://{host}/sharing/link?surl={link_info.surl}",

@@ -10,6 +10,7 @@ TERABOX_DOMAINS = [
     "teraboxapp.com",
     "teraboxurl.com",
     "1024tera.com",
+    "1024tera.co",
     "1024terabox.com",
     "teraboxshare.com",
     "teraboxlink.com",
@@ -25,6 +26,7 @@ TERABOX_DOMAINS = [
     "nephobox.com",
     "freeterabox.com",
     "4funbox.com",
+    "4funbox.co",
     "mirrobox.com",
     "mirrorbox.com",
     "momerybox.com",
@@ -42,12 +44,21 @@ TERABOX_DOMAINS = [
 TERABOX_MIRROR_HOSTS = [
     "www.terabox.app",
     "www.1024tera.com",
+    "www.1024terabox.com",
     "www.terabox.com",
+    "www.teraboxapp.com",
     "www.freeterabox.com",
-    "www.teraboxshare.com",
     "www.4funbox.com",
+    "www.4funbox.co",
+    "www.1024tera.co",
+    "www.nephobox.com",
     "www.mirrobox.com",
-    "www.nephobox.com"
+    "www.momerybox.com",
+    "www.tibibox.com",
+    "www.terabox.fun",
+    "www.teraboxlink.com",
+    "www.terasharelink.com",
+    "www.teraboxshare.com"
 ]
 
 
@@ -96,17 +107,17 @@ class TeraBoxDetector:
             return None
 
         # 1. Query parameters
-        match_q = re.search(r'[?&](?:surl|shorturl|code|key|id)=([a-zA-Z0-9_-]+)', url)
+        match_q = re.search(r'[?&](?:surl|shorturl|code|key|id|shareid)=([a-zA-Z0-9_-]+)', url)
         if match_q:
             return match_q.group(1)
 
         # 2. Path prefix patterns
-        match_path = re.search(r'/(?:s|wap/share/filelist|sharing/link|sharing|share|app|d|file)/([a-zA-Z0-9_-]+)', url)
+        match_path = re.search(r'/(?:s|wap/share/filelist|sharing/link|sharing/init|sharing|share/init|share/list|share|app|d|file|web/share|wap/link|main)/([a-zA-Z0-9_-]+)', url)
         if match_path:
             return match_path.group(1)
 
-        # 3. Path ending directly in 12+ character alphanumeric key
-        match_direct = re.search(r'/([1a-zA-Z0-9_-]{12,})(?:[/?#]|$)', url)
+        # 3. Path ending directly in 8+ character alphanumeric key or 1-prefixed key
+        match_direct = re.search(r'/(1[a-zA-Z0-9_-]{7,}|[a-zA-Z0-9_-]{10,})(?:[/?#]|$)', url)
         if match_direct:
             return match_direct.group(1)
 
